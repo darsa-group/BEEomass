@@ -4,8 +4,10 @@ import numpy as np
 
 
 SRC_METADATA_PATH = "C:/Users/au738360/PycharmProjects/BEE/metadata_enriched.csv"
+METADATA ="C:/Users/au738360/PycharmProjects/BEE/metadata.csv"
 
 df = pd.read_csv(SRC_METADATA_PATH)
+metadata_df = pd.read_csv(METADATA)
 
 biodiscover_S_df = df[(df["DATASET"] == "biodiscover-S") & (df["INSECT_ID"].isin(df["INSECT_ID"].unique()))]
 biodiscover_L_df = df[(df["DATASET"] == "biodiscover-L") & (df["INSECT_ID"].isin(df["INSECT_ID"].unique()))]
@@ -63,8 +65,9 @@ print(biodiscover_S_sampled[["INSECT_ID", "SPLIT"]])
 print("\nUpdated SPLIT column for biodiscover-L:")
 print(biodiscover_L_sampled[["INSECT_ID", "SPLIT"]])
 
-df.loc[df["INSECT_ID"].isin(biodiscover_S_sampled["INSECT_ID"]), "SPLIT"] = "train"
-df.loc[df["INSECT_ID"].isin(biodiscover_L_sampled["INSECT_ID"]), "SPLIT"] = "train"
+metadata_df.loc[df["INSECT_ID"].isin(biodiscover_S_sampled["INSECT_ID"]), "SPLIT"] = "train"
+metadata_df.loc[df["INSECT_ID"].isin(biodiscover_L_sampled["INSECT_ID"]), "SPLIT"] = "train"
 
-df.to_csv(SRC_METADATA_PATH, index=False)
+
+metadata_df.to_csv(METADATA, index=False)
 
