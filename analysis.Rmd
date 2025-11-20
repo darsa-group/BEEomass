@@ -48,7 +48,7 @@ ggplot(metadata[SPLIT == "test"],
        aes(cbrDRYMASS_MG, 
            cbrDRYMASS_MG_PRED_AREA_LM, 
            shape=DATASET, colour=DATASET)) +
-  geom_point() + geom_smooth(method = "lm") +
+  geom_point(alpha=.6) + geom_smooth(method = "lm") +
   coord_fixed(xlim = lims, ylim = lims)
 mod <- lm(cbrDRYMASS_MG_PRED_AREA_LM ~ cbrDRYMASS_MG, metadata[SPLIT == "test"])
 summary(mod)
@@ -67,7 +67,7 @@ ggplot(metadata[SPLIT == "test"],
            cbrDRYMASS_MG_PRED, 
            shape=DATASET, 
            colour=DATASET)) +
-  geom_point() + 
+  geom_point(alpha=.6) + 
   geom_smooth(aes(cbrDRYMASS_MG, cbrDRYMASS_MG_PRED), colour="black", fill="black",  inherit.aes = FALSE, method = "lm") + 
   coord_fixed(xlim = lims, ylim = lims)
 
