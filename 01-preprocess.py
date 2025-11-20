@@ -138,7 +138,8 @@ def main(args):
 
         record[colname] = count
         # fixme express area in mm2
-        # record["AREA"] = record["TRANSPARENT_PIXELS"]
+        record["AREA_MM2"] = record["TRANSPARENT_PIXELS"] * (25.4/ record["DPI"]) ** 2
+
         records.append(record)
 
     out_df = pd.DataFrame(records)
