@@ -16,13 +16,18 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
-import torchvision.models as models
+from models import build_resnet101, build_resnet18
+from datetime import datetime
+
+
 
 # -------------------- CONSTANTS / HYPERPARAMS --------------------
 # Paths
 ROOT_IMG_DIR = Path("00_data/02_resized")            # <- change me
 METADATA_CSV = Path("metadata_enriched.csv")      # <- change me
-OUT_DIR = Path("runs/regression_resnet101")
+
+
+OUT_DIR = Path(f"01_runs/regression_resnet101/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
 
 # Training hyperparams
 SEED = 42
@@ -76,7 +81,7 @@ class ImageRegDataset(Dataset):
     """Dataset that accepts a pandas DataFrame with at least these columns:
     - `IMAGE_FILENAME`: image filename (can be relative)
     - `DATASET`: subdirectory name under `root_dir` where the image lives
-    - `BIOMASS_FACTOR`: regression target (float)
+    - `BF_cbrMG_MM`: regression target (float)
     - `SPLIT`: 'train' | 'val' | 'test'
     Images are resolved as: root_dir / DATASET / IMAGE_FILENAME (unless IMAGE_FILENAME is absolute).
     """
@@ -87,11 +92,11 @@ class ImageRegDataset(Dataset):
         self.transform = transform
 
         # Filter by split
-        self.df = df[df["SPLIT"] == split].reset_index(drop=True).copy()
+        self.df = df[df["SPLIT"] == split][df["IS_VALID"] == True].reset_index(drop=True).copy()
 
         # Column checks
-        required_cols = {"IMAGE_FILENAME", "DATASET", "BIOMASS_FACTOR"}
-        #fixme remove not valid
+        required_cols = {"IMAGE_FILENAME", "DATASET", "BF_cbrMG_MM"}
+
         missing = required_cols - set(self.df.columns)
         if missing:
             raise ValueError(f"DataFrame is missing required columns: {sorted(missing)}")
@@ -103,12 +108,8 @@ class ImageRegDataset(Dataset):
         row = self.df.iloc[idx]
 
         img_path = Path(row["IMAGE_FILENAME"])
+        # print(row.DATASET)
         # If path is not absolute, resolve as <root>/<DATASET>/<IMAGE_FILENAME>
-        if not img_path.is_absolute():
-            if self.root_dir is None:
-                raise ValueError("root_dir must be provided when IMAGE_FILENAME is not absolute.")
-            dataset_dir = Path(str(row["DATASET"]))
-            img_path = self.root_dir / dataset_dir / img_path
 
         if not img_path.exists():
             raise FileNotFoundError(f"Image not found: {img_path}")
@@ -117,7 +118,7 @@ class ImageRegDataset(Dataset):
         if self.transform is not None:
             img = self.transform(img)
 
-        target = float(row["BIOMASS_FACTOR"])
+        target = float(row["BF_cbrMG_MM"])
         return img, torch.tensor(target, dtype=torch.float32)
 
 # -------------------- TRANSFORMS --------------------
@@ -159,14 +160,7 @@ def get_transforms(split: str):
             # T.Normalize(mean=MEAN, std=STD),
         ])
 
-# -------------------- MODEL --------------------
 
-def build_model(pretrained: bool = True):
-    model = models.resnet101(pretrained=pretrained)
-    # Replace final fc with one output (regression)
-    in_features = model.fc.in_features
-    model.fc = nn.Linear(in_features, 1)
-    return model
 
 # -------------------- TRAIN / VAL LOOP --------------------
 
@@ -422,7 +416,8 @@ def run_training(
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=PIN_MEMORY, persistent_workers=PERSISTENT_WORKERS)
 
     # Model, optimizer, loss
-    model = build_model(pretrained=True).to(device)
+    model = build_resnet101(pretrained=True).to(device)
+    # model = build_resnet18(pretrained=True).to(device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=STEP_LR_STEP, gamma=STEP_LR_GAMMA)
@@ -453,13 +448,14 @@ def run_training(
 
         # checkpoint
         ckpt_path = out_dir / f"checkpoint_epoch{epoch}.pt"
-        torch.save({
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-        }, ckpt_path)
+        if epoch % 5 ==0:
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+            }, ckpt_path)
 
         # keep best
         if val_loss < best_val_loss:

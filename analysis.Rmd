@@ -1,0 +1,49 @@
+---
+title: "descriptive_stats"
+output: pdf_document
+date: "2025-11-19"
+---
+
+```{r}
+rm(list=ls())
+library(data.table)   # fread
+library(ggplot2)
+library(DT)          # datatable output
+library(scales)
+library(lme4)
+library(MuMIn)
+library(plotly)
+
+# Paths to CSVs (adjust if needed)
+
+md_csv = "predictions.csv"
+metadata <- fread(md_csv)
+metadata = metadata[IS_VALID == TRUE]
+ggplot(metadata[SPLIT == "test"], aes(BF_cbrMG_MM, BF_PRED, shape=DATASET, colour=DATASET)) + geom_point()
+
+metadata[, DRYMASS_MG_PRED := (BF_PRED*ROI_SIZE_MM)^3 ]
+metadata[, cbrDRYMASS_MG := DRYMASS_MG^ (1/3)]
+metadata[, cbrDRYMASS_MG_PRED := DRYMASS_MG_PRED^ (1/3)]
+metadata[, sqrtAREA := (TRANSPARENT_PIXELS / DPI )^(1/2)]
+ggplot(metadata[SPLIT == "train"], aes(cbrDRYMASS_MG, cbrDRYMASS_MG_PRED, shape=DATASET, colour=DATASET)) + geom_point() 
+ggplot(metadata[SPLIT == "test"], aes(cbrDRYMASS_MG, cbrDRYMASS_MG_PRED, shape=DATASET, colour=DATASET)) + geom_point() 
+
+
+
+mod <- lm(cbrDRYMASS_MG_PRED ~ cbrDRYMASS_MG, metadata[SPLIT == "test"])
+summary(mod)
+```
+The area based model:
+```{r}
+metadata[SPLIT == "train"]
+ggplot(metadata[SPLIT == "train" ], aes( cbrDRYMASS_MG, sqrtAREA, shape=DATASET, colour=DATASET)) + geom_point()
+
+area_model <- lm(cbrDRYMASS_MG ~ sqrtAREA, metadata[SPLIT == "train"])
+summary(area_model)
+metadata[, cbrDRYMASS_MG_PRED_AREA_LM := predict(area_model, metadata)]
+ggplot(metadata[SPLIT == "test"], aes(cbrDRYMASS_MG, cbrDRYMASS_MG_PRED_AREA_LM, shape=DATASET, colour=DATASET)) + geom_point() 
+
+mod <- lm(cbrDRYMASS_MG_PRED_AREA_LM ~ cbrDRYMASS_MG, metadata[SPLIT == "test"])
+summary(mod)
+```
+

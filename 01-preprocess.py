@@ -134,9 +134,11 @@ def main(args):
         record["IMAGE_FILENAME"] = str(out_path)
         record["SCALE"] = scale
         record["ROI_SIZE_MM"]  = (224/scale) / record["DPI"] * 25.4
-        record["BF_MG_MM3"] =  record["DRYMASS_MG"] / record["ROI_SIZE_MM"] ** 3
+        record["BF_cbrMG_MM"] =  record["DRYMASS_MG"] ** (1/3) / record["ROI_SIZE_MM"]
 
         record[colname] = count
+        # fixme express area in mm2
+        # record["AREA"] = record["TRANSPARENT_PIXELS"]
         records.append(record)
 
     out_df = pd.DataFrame(records)

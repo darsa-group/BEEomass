@@ -26,11 +26,9 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import torchvision.models as models
-
+from models import build_resnet18
 # -------------------- CONSTANTS --------------------
 IMG_SIZE = 224
-MEAN = [0.485, 0.456, 0.406]
-STD = [0.229, 0.224, 0.225]
 BATCH_SIZE = 64
 NUM_WORKERS = 4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -76,12 +74,6 @@ def get_inference_transform():
 
 # -------------------- MODEL --------------------
 
-def build_model(pretrained: bool = False):
-    model = models.resnet101(pretrained=pretrained)
-    in_features = model.fc.in_features
-    model.fc = nn.Linear(in_features, 1)
-    return model
-
 
 def load_weights_to_model(model: nn.Module, weights_path: Path, device: torch.device):
     """Attempt to load weights. Supports either saved state_dict or a full model object file.
@@ -121,7 +113,7 @@ def load_weights_to_model(model: nn.Module, weights_path: Path, device: torch.de
 
 # -------------------- INFERENCE --------------------
 
-def run_inference(csv_path: Path, root_img_dir: Path, weights_path: Path, out_dir: Path, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS):
+def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, root_img_dir: Path = "."):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(csv_path)
@@ -132,7 +124,7 @@ def run_inference(csv_path: Path, root_img_dir: Path, weights_path: Path, out_di
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     # build model and load weights
-    model = build_model(pretrained=False)
+    model = build_resnet18(pretrained=False)
     model = load_weights_to_model(model, weights_path, DEVICE)
     model.eval()
 
@@ -158,14 +150,14 @@ def run_inference(csv_path: Path, root_img_dir: Path, weights_path: Path, out_di
 
 if __name__ == "__main__":
 
-    ROOT_IMG_DIR = Path("data")  # <- change me
-    METADATA_CSV = Path("metadata-with-orig-area.csv")  # <- change me
-    WEIGHTS = Path("runs/regression_resnet101-bak/best_model.pt")
-    # WEIGHTS = Path("runs/regression_resnet50/checkpoint_epoch20.pt")
+    # ROOT_IMG_DIR = Path("data")  # <- change me
+    METADATA_CSV = Path("metadata_enriched.csv")  # <- change me
+    # WEIGHTS = Path("runs/regression_resnet101-bak/best_model.pt")
+    WEIGHTS = Path("01_runs/regression_resnet18/2025-11-20_10-04-55/best_model.pt")
     OUT_DIR = Path(".")
     NUM_WORKERS = 16
     BATCH_SIZE = 16
 
 
-    run_inference(csv_path=METADATA_CSV, root_img_dir=ROOT_IMG_DIR, weights_path=WEIGHTS,
+    run_inference(csv_path=METADATA_CSV,  weights_path=WEIGHTS,
                   out_dir=Path("./"), batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
