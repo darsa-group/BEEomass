@@ -26,7 +26,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import torchvision.models as models
-from models import build_resnet18, build_resnet101, load_weights_to_model
+from models import build_resnet, load_weights_to_model
 # -------------------- CONSTANTS --------------------
 IMG_SIZE = 224
 BATCH_SIZE = 64
@@ -72,8 +72,6 @@ def get_inference_transform():
         # T.Normalize(mean=MEAN, std=STD),
     ])
 
-# -------------------- MODEL --------------------
-
 # -------------------- INFERENCE --------------------
 
 def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, root_img_dir: Path = "."):
@@ -88,10 +86,9 @@ def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size:
 
     # build model and load weights
     # model = build_resnet18(pretrained=False)
-    model = build_resnet101(pretrained=False)
+    model = build_resnet(architecture=ARCH, pretrained=False)
     model = load_weights_to_model(model, weights_path, DEVICE)
     model.eval()
-
     preds = np.full((len(df),), np.nan, dtype=float)
 
     with torch.no_grad():
@@ -117,11 +114,11 @@ if __name__ == "__main__":
     # ROOT_IMG_DIR = Path("data")  # <- change me
     METADATA_CSV = Path("metadata_enriched.csv")  # <- change me
     # WEIGHTS = Path("runs/regression_resnet101-bak/best_model.pt")
-    WEIGHTS = Path("01_runs/regression_resnet101/2025-11-20_10-59-32/best_model.pt")
+    WEIGHTS = Path("01_runs/regression_resnet101/2025-11-26_09-45-04/best_model.pt")
     OUT_DIR = Path(".")
     NUM_WORKERS = 16
     BATCH_SIZE = 16
-
+    ARCH="101"
 
     run_inference(csv_path=METADATA_CSV,  weights_path=WEIGHTS,
                   out_dir=Path("./"), batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)

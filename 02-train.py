@@ -4,6 +4,7 @@ import os
 import random
 import argparse
 from pathlib import Path
+from platform import architecture
 from typing import Optional
 
 import numpy as np
@@ -16,7 +17,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
-from models import build_resnet101, build_resnet18
+from models import build_resnet
 from datetime import datetime
 
 
@@ -25,28 +26,30 @@ from datetime import datetime
 # Paths
 ROOT_IMG_DIR = Path("00_data/02_resized")            # <- change me
 METADATA_CSV = Path("metadata_enriched.csv")      # <- change me
+RESNET_ARCH = "101"
 
-
-OUT_DIR = Path(f"01_runs/regression_resnet101/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
+OUT_DIR = Path(f"01_runs/regression_resnet{RESNET_ARCH}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
 
 # Training hyperparams
 SEED = 42
 BATCH_SIZE = 32
 NUM_WORKERS = 4
-NUM_EPOCHS = 100
+NUM_EPOCHS = 500
 LR = 1e-4
 WEIGHT_DECAY = 1e-5
 MOMENTUM = 0.9
-STEP_LR_STEP = 20
+STEP_LR_STEP = 100
 STEP_LR_GAMMA = 0.5
 
 # Image size and normalization (ResNet default expected normalization)
 IMG_SIZE = 224
 
 # Label smoothing multiplicative range for training (apply per-sample)
-LABEL_SMOOTH_MIN = 0.8
-LABEL_SMOOTH_MAX = 1.2
-
+LABEL_SMOOTH_MIN = 0.9
+LABEL_SMOOTH_MAX = 1.1
+#how much the images can be downscaled during augmentation. this is a special
+# augmentation that also modifies the target
+DOWNSCALING_MIN = 0.75
 # Device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -76,7 +79,41 @@ def compute_mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.mean(np.abs(y_true - y_pred)))
 
 # -------------------- DATASET --------------------
-# -------------------- DATASET --------------------
+
+
+class RandomDownscale:
+    """
+    Downscale image by factor in [min_factor, max_factor] (≤ 1),
+    paste on white background of original size,
+    return both image and scale factor.
+    """
+
+    def __init__(self, min_scale=DOWNSCALING_MIN, max_scale=1.0):
+        assert 0 < min_scale <= max_scale <= 1.0
+        self.min_scale = min_scale
+        self.max_scale = max_scale
+
+    def __call__(self, img: Image.Image):
+        W, H = img.size
+
+        # sample scale ∈ [min_scale, max_scale]
+        scale = random.uniform(self.min_scale, self.max_scale)
+
+        new_w = int(W * scale)
+        new_h = int(H * scale)
+
+        # downscale
+        img_small = img.resize((new_w, new_h), Image.BICUBIC)
+
+        # create white canvas
+        canvas = Image.new("RGB", (W, H), (255, 255, 255))
+
+        # center the scaled image
+        offset = ((W - new_w) // 2, (H - new_h) // 2)
+        canvas.paste(img_small, offset)
+
+        return canvas, scale
+
 class ImageRegDataset(Dataset):
     """Dataset that accepts a pandas DataFrame with at least these columns:
     - `IMAGE_FILENAME`: image filename (can be relative)
@@ -88,6 +125,7 @@ class ImageRegDataset(Dataset):
 
     def __init__(self, df: pd.DataFrame, split: str, root_dir: Optional[Path] = None, transform=None):
         assert split in ("train", "val", "test")
+        self.split = split
         self.root_dir = Path(root_dir) if root_dir is not None else None
         self.transform = transform
 
@@ -98,6 +136,12 @@ class ImageRegDataset(Dataset):
         required_cols = {"IMAGE_FILENAME", "DATASET", "BF_cbrMG_MM"}
 
         missing = required_cols - set(self.df.columns)
+
+        if self.split == "train":
+            self.rescale_aug = RandomDownscale()
+        else:
+            self.rescale_aug = None
+
         if missing:
             raise ValueError(f"DataFrame is missing required columns: {sorted(missing)}")
 
@@ -115,10 +159,16 @@ class ImageRegDataset(Dataset):
             raise FileNotFoundError(f"Image not found: {img_path}")
 
         img = Image.open(img_path).convert("RGB")
+        if self.rescale_aug:
+            img, scale = self.rescale_aug(img)
+        else:
+            img, scale = img, 1.0
+
         if self.transform is not None:
             img = self.transform(img)
 
-        target = float(row["BF_cbrMG_MM"])
+        target = float(row["BF_cbrMG_MM"]) * scale ** 3
+        # print(float(row["BF_cbrMG_MM"]), scale, target)
         return img, torch.tensor(target, dtype=torch.float32)
 
 # -------------------- TRANSFORMS --------------------
@@ -139,8 +189,6 @@ def random_quadrant_rotation(img):
 def get_transforms(split: str):
     if split == "train":
         train_transforms = T.Compose([
-            # T.RandomResizedCrop(IMG_SIZE, scale=(0.8, 1.0)),
-            # fixme rescale augmentation
             T.RandomHorizontalFlip(p=0.5),
             T.Lambda(lambda img: random_quadrant_rotation(img)),
             # Color jitter (brightness, contrast, saturation, hue)
@@ -148,16 +196,12 @@ def get_transforms(split: str):
             # Gaussian blur (kernel size chosen relative to image size)
             T.Lambda(lambda img: random_blur_or_sharpness()(img)),
             T.ToTensor(),
-            # T.Normalize(mean=MEAN, std=STD),
         ])
         return train_transforms
     else:
         # val/test: deterministic scaling / center crop
         return T.Compose([
-            # T.Resize(int(IMG_SIZE * 1.15)),
-            # T.CenterCrop(IMG_SIZE),
             T.ToTensor(),
-            # T.Normalize(mean=MEAN, std=STD),
         ])
 
 
@@ -416,8 +460,8 @@ def run_training(
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=PIN_MEMORY, persistent_workers=PERSISTENT_WORKERS)
 
     # Model, optimizer, loss
-    model = build_resnet101(pretrained=True).to(device)
-    # model = build_resnet18(pretrained=True).to(device)
+    model = build_resnet(architecture = RESNET_ARCH, pretrained=True).to(device)
+
     criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=STEP_LR_STEP, gamma=STEP_LR_GAMMA)
@@ -448,7 +492,7 @@ def run_training(
 
         # checkpoint
         ckpt_path = out_dir / f"checkpoint_epoch{epoch}.pt"
-        if epoch % 5 ==0:
+        if epoch % 50 ==0:
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),

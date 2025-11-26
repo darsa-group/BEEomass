@@ -56,8 +56,36 @@ ggplot(metadata[SPLIT == "test"],
            shape=DATASET, colour=DATASET)) +
   geom_point(alpha=.6) + geom_smooth(method = "lm") +
   coord_fixed(xlim = lims, ylim = lims)
-mod <- lm(cbrDRYMASS_MG_PRED_AREA_LM ~ cbrDRYMASS_MG, metadata[SPLIT == "test"])
-summary(mod)
+
+
+summary_dt = rbindlist(
+    lapply(1:1000,
+        function(x) {
+          subset = metadata[SPLIT == "test"] [ ,.SD[sample(1:.N, 1),], by="INSECT_ID"]
+          subset = subset[sample(1:.N,.N, replace=T)]
+          out = subset[, .(cbrDRYMASS_MG,cbrDRYMASS_MG_PRED_AREA_LM, DATASET)]
+          out[, REP := x]
+          }
+        )
+)
+
+performance_rep = summary_dt[, 
+             .(
+               MAE = mean(abs(cbrDRYMASS_MG-cbrDRYMASS_MG_PRED_AREA_LM)),
+               R2 = summary(lm(cbrDRYMASS_MG_PRED_AREA_LM ~ cbrDRYMASS_MG))$r.squared
+               )
+           ,
+           by=c("REP", "DATASET")]
+
+performance_rep[,.(MAE = mean(MAE),
+                   MAE_conf_l = quantile(MAE, c(0.025)),
+                   MAE_conf_h = quantile(MAE, c(0.975)),
+                   R2 = mean(R2),
+                   R2_conf_l = quantile(R2, c(0.025)),
+                   R2_conf_h = quantile(R2, c(0.975))
+                   ), by=DATASET]
+
+
 
 ```
 ## CNN-based biomass prediction

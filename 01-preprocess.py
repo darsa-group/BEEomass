@@ -33,20 +33,21 @@ except Exception:
 
 def measure_background(im: Image.Image, path: Path):
     """Return the number of background pixels depending on format."""
+    w, h = im.size
     arr = np.asarray(im)
     if path.suffix.lower() in [".jpg", ".jpeg"]:
         # count pure white pixels
         if arr.ndim == 3 and arr.shape[2] >= 3:
             white_mask = np.all(arr[:, :, :3] == 255, axis=2)
-            return int(white_mask.sum()), "WHITE_PIXELS"
+            return int(w * h -white_mask.sum() ), "NON_TRANSPARENT_PIXELS"
     elif path.suffix.lower() == ".png":
         if im.mode != "RGBA":
             im = im.convert("RGBA")
             arr = np.asarray(im)
         alpha = arr[..., 3]
         trans_mask = alpha == 0
-        return int(trans_mask.sum()), "TRANSPARENT_PIXELS"
-    return 0, "WHITE_PIXELS"  # default
+        return int(w * h - trans_mask.sum() ), "NON_TRANSPARENT_PIXELS"
+    return w * h, "NON_TRANSPARENT_PIXELS"  # default
 
 
 def resize_and_pad(im: Image.Image, size=224):
@@ -137,8 +138,8 @@ def main(args):
         record["BF_cbrMG_MM"] =  record["DRYMASS_MG"] ** (1/3) / record["ROI_SIZE_MM"]
 
         record[colname] = count
-        # fixme express area in mm2
-        record["AREA_MM2"] = record["TRANSPARENT_PIXELS"] * (25.4/ record["DPI"]) ** 2
+
+        record["AREA_MM2"] = record["NON_TRANSPARENT_PIXELS"] * (25.4/ record["DPI"]) ** 2
 
         records.append(record)
 

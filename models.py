@@ -6,20 +6,23 @@ import torch
 
 # -------------------- MODEL --------------------
 
-def build_resnet101(pretrained: bool = True):
-    model = models.resnet101(pretrained=pretrained)
+
+
+def build_resnet(architecture, pretrained: bool = True):
+    if architecture == "18":
+        model = models.resnet18(pretrained=pretrained)
+    elif architecture == "50":
+        model = models.resnet50(pretrained=pretrained)
+    elif architecture == "101":
+        model = models.resnet101(pretrained=pretrained)
+    else:
+        raise Exception(f"Unsupported resnet architecture: {architecture}")
     # Replace final fc with one output (regression)
     in_features = model.fc.in_features
     model.fc = nn.Linear(in_features, 1)
     return model
 
 
-def build_resnet18(pretrained: bool = True):
-    model = models.resnet18(pretrained=pretrained)
-    # Replace final fc with one output (regression)
-    in_features = model.fc.in_features
-    model.fc = nn.Linear(in_features, 1)
-    return model
 
 def load_weights_to_model(model: nn.Module, weights_path: Path, device: torch.device):
     """Attempt to load weights. Supports either saved state_dict or a full model object file.
