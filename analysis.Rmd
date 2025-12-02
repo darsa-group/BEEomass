@@ -5,6 +5,7 @@ date: "2025-11-19"
 ---
 
 ```{r, message=FALSE}
+
 rm(list=ls())
 library(data.table)   # fread
 library(ggplot2)
@@ -13,6 +14,9 @@ library(scales)
 library(lme4)
 library(MuMIn)
 library(plotly)
+
+
+N_BOOT_REP = 10
 
 learning_curve_csv = "01_runs/regression_resnet101/2025-11-20_10-59-32/epoch_results.csv"
 total_lines <- R.utils::countLines(learning_curve_csv)
@@ -44,7 +48,7 @@ metadata[, .N, by=c("DATASET", "SPLIT")]
 ```
 ## Area-based biomass prediction
 ```{r, message=FALSE}
-area_model <- lm(cbrDRYMASS_MG ~ sqrtAREA_MM * DATASET, metadata[SPLIT == "train"])
+area_model <- lm(cbrDRYMASS_MG ~ sqrtAREA_MM, metadata[SPLIT == "train"])
 # area_model <- lmer(cbrDRYMASS_MG ~ sqrtAREA_MM + (1 | INSECT_ID),
 #                    data = metadata[SPLIT == "train"])
 summary(area_model)
@@ -59,7 +63,7 @@ ggplot(metadata[SPLIT == "test"],
 
 
 summary_dt = rbindlist(
-    lapply(1:1000,
+    lapply(1:N_BOOT_REP,
         function(x) {
           subset = metadata[SPLIT == "test"] [ ,.SD[sample(1:.N, 1),], by="INSECT_ID"]
           subset = subset[sample(1:.N,.N, replace=T)]
@@ -90,6 +94,7 @@ performance_rep[,.(MAE = mean(MAE),
 ```
 ## CNN-based biomass prediction
 ```{r, message=FALSE}
+
 ggplot(learning_curve, aes(epoch, train_loss)) + 
   geom_line(colour="blue") +
   geom_line(aes(y=val_loss), colour="red")  + 
@@ -107,7 +112,7 @@ ggplot(metadata[SPLIT == "test"],
 
 
 summary_dt = rbindlist(
-    lapply(1:1000,
+    lapply(1:N_BOOT_REP,
         function(x) {
           subset = metadata[SPLIT == "test"] [ ,.SD[sample(1:.N, 1),], by="INSECT_ID"]
           subset = subset[sample(1:.N,.N, replace=T)]

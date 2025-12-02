@@ -23,6 +23,7 @@ import warnings
 import numpy as np
 import pandas as pd
 from PIL import Image
+from torch.xpu import device
 
 try:
     from tqdm import tqdm
@@ -151,8 +152,8 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Resize and measure background area in JPG/PNG images per dataset.")
-    parser.add_argument("--csv", required=True, help="Path to metadata CSV (must contain IMAGE_FILENAME and dataset columns)")
-    parser.add_argument("--root", required=True, help="Root directory containing 01_segmented/ and 02_resized/")
+    parser.add_argument("--csv", default="metadata.csv" , help="Path to metadata CSV (must contain IMAGE_FILENAME and dataset columns)")
+    parser.add_argument("--root", default="00_data",  help="Root directory containing 01_segmented/ and 02_resized/")
     parser.add_argument("--out", default="metadata_enriched.csv", help="Output CSV path")
     args = parser.parse_args()
     main(args)
