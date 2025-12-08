@@ -26,7 +26,7 @@ from datetime import datetime
 # Paths
 ROOT_IMG_DIR = Path("00_data/02_resized")            # <- change me
 METADATA_CSV = Path("metadata_enriched.csv")      # <- change me
-RESNET_ARCH = "101"
+RESNET_ARCH = "50"
 
 OUT_DIR = Path(f"01_runs/regression_resnet{RESNET_ARCH}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
 
@@ -45,11 +45,11 @@ STEP_LR_GAMMA = 0.5
 IMG_SIZE = 224
 
 # Label smoothing multiplicative range for training (apply per-sample)
-LABEL_SMOOTH_MIN = 0.9
-LABEL_SMOOTH_MAX = 1.1
+LABEL_SMOOTH_MIN = 0.8
+LABEL_SMOOTH_MAX = 1.2
 #how much the images can be downscaled during augmentation. this is a special
 # augmentation that also modifies the target
-DOWNSCALING_MIN = 0.75
+DOWNSCALING_MIN = 0.5
 # Device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
