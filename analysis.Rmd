@@ -16,7 +16,7 @@ library(MuMIn)
 library(plotly)
 
 
-N_BOOT_REP = 10
+N_BOOT_REP = 50
 
 learning_curve_csv = "01_runs/regression_resnet101/2025-11-20_10-59-32/epoch_results.csv"
 total_lines <- R.utils::countLines(learning_curve_csv)
