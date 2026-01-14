@@ -203,4 +203,4 @@ pyvenv.cfg
 *.Rproj.user
 *.Rproj
 *.Rhistory
-00_data/
+**/00_data/

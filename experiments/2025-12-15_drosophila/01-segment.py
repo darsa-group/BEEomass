@@ -104,8 +104,8 @@ from flat_bug.predictor import Predictor
 if __name__ == "__main__":
 
     FB_WEIGHTS = "/home/quentin/repos/flat-bug-git/scripts/training/runs/segment/fb_M_2025-12-01_08-09-45/weights/last.pt"
-    IN_DIR_ROOT = "/run/media/quentin/STICK/droso/entoscan"
-    OUT_DIR_ROOT = "/home/quentin/Desktop/droso/results"
+    IN_DIR_ROOT = "00_data/00_raw"
+    OUT_DIR_ROOT = "00_data/01_segmented/crops"
     IMAGE_SCALE = 0.5
     FORCE =True
 
@@ -115,6 +115,9 @@ if __name__ == "__main__":
     import json
     import glob
     import shutil
+
+    if Path(OUT_DIR_ROOT).exists():
+        shutil.rmtree(OUT_DIR_ROOT)
 
     for f in glob.glob(str(Path(IN_DIR_ROOT) /"**"/ "*.json"), recursive=True):
 
@@ -128,11 +131,12 @@ if __name__ == "__main__":
 
         assert thumbnail.exists()
         assert image.exists()
-        out_full_root = Path(OUT_DIR_ROOT) / Path(IN_DIR_ROOT).name
+        out_full_root = Path(OUT_DIR_ROOT) # / Path(IN_DIR_ROOT).name
 
         out_rel_path = Path(os.path.dirname(os.path.relpath(metadata_f, IN_DIR_ROOT)))
 
-        target = out_full_root / out_rel_path
+        # target = out_full_root / out_rel_path
+        target = OUT_DIR_ROOT
 
         if not FORCE and (target/metadata_f.name).exists():
             logging.info(f"Skipping existing target {target/metadata_f.name}")
@@ -142,17 +146,17 @@ if __name__ == "__main__":
 
             logging.info(f"Found {label}")
             metadata["custom_label"] = label
-            if target.exists():
-                shutil.rmtree(target)
+            # if target.exists():
+            #     shutil.rmtree(target)
             results = pred(str(image),scale_before=IMAGE_SCALE,)
 
             # results.boxes
             # for i in range(len(results)):
 
 
-            os.makedirs(target/"crops", exist_ok=True)
-            crops = results.save_crops(target / "crops", mask=True, identifier=label)
-            results.plot(outpath=str(target/"flatbug_results.jpg"), scale=IMAGE_SCALE)
+            os.makedirs(target, exist_ok=True)
+            crops = results.save_crops(target , mask=True, identifier=label)
+            # results.plot(outpath=str(target/"flatbug_results.jpg"), scale=IMAGE_SCALE)
 
             dpi = get_dpi(str(image))
             for crp,b,cnf,s in zip(crops, results.boxes, results.confs, results.scales):
@@ -166,8 +170,8 @@ if __name__ == "__main__":
                 with open(Path(crp).with_suffix(".json"), "w") as f:
                     json.dump(m, f)
 
-            with open(target/metadata_f.name, "w") as f:
-                json.dump(metadata, f)
+            # with open(Path(target)/metadata_f.name, "w") as f:
+            #     json.dump(metadata, f)
 
 
         except ValueError as e:
