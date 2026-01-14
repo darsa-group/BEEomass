@@ -119,7 +119,8 @@ if __name__ == "__main__":
     OUT_DIR = Path(".")
     NUM_WORKERS = 16
     BATCH_SIZE = 16
+    ARCH="50"
 
 
     run_inference(csv_path=METADATA_CSV, weights_path=WEIGHTS,
-                  out_dir=Path("../"), batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
+                  out_dir=Path("./"), batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
