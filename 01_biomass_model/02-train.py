@@ -17,7 +17,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
-from models import build_resnet
+from models import build_efficientnet
 from datetime import datetime
 
 
@@ -26,9 +26,10 @@ from datetime import datetime
 # Paths
 ROOT_IMG_DIR = Path("00_data/02_resized")            # <- change me
 METADATA_CSV = Path("metadata_enriched.csv")      # <- change me
-RESNET_ARCH = "50"
+# RESNET_ARCH = "50"
+EFFNET_VARIANT = "v2_s"
 
-OUT_DIR = Path(f"01_runs/regression_resnet{RESNET_ARCH}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
+OUT_DIR = Path(f"01_runs/regression_effnet{EFFNET_VARIANT}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
 
 # Training hyperparams
 SEED = 42
@@ -362,7 +363,7 @@ def tile_images_cv2(
     denorm_mean: Optional[Sequence[float]] = None,
     denorm_std: Optional[Sequence[float]] = None,
     window_name: str = "batch",
-    show: bool = True,
+    show: bool = False,
 ) -> np.ndarray:
     """
     Make a tiled canvas from a batch of images and (optionally) show it with OpenCV.
@@ -460,7 +461,7 @@ def run_training(
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=PIN_MEMORY, persistent_workers=PERSISTENT_WORKERS)
 
     # Model, optimizer, loss
-    model = build_resnet(architecture = RESNET_ARCH, pretrained=True).to(device)
+    model = build_efficientnet(variant = EFFNET_VARIANT, pretrained=True).to(device)
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
