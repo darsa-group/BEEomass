@@ -26,7 +26,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import torchvision.models as models
-from models import build_resnet, load_weights_to_model
+from models import build_efficientnet, load_weights_to_model
 # -------------------- CONSTANTS --------------------
 IMG_SIZE = 224
 BATCH_SIZE = 64
@@ -86,7 +86,7 @@ def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size:
 
     # build model and load weights
     # model = build_resnet18(pretrained=False)
-    model = build_resnet(architecture=ARCH, pretrained=False)
+    model = build_efficientnet(variant=EFFNET_VARIANT, pretrained=False)
     model = load_weights_to_model(model, weights_path, DEVICE)
     model.eval()
     preds = np.full((len(df),), np.nan, dtype=float)
@@ -115,11 +115,12 @@ if __name__ == "__main__":
     METADATA_CSV = Path("metadata_enriched.csv")  # <- change me
     # WEIGHTS = Path("runs/regression_resnet101-bak/best_model.pt")
     # WEIGHTS = Path("01_runs/regression_resnet50/2025-12-03_18-09-27/best_model.pt")
-    WEIGHTS = Path("01_runs/regression_resnet50/2025-12-04_08-23-47/best_model.pt")
-    OUT_DIR = Path("..")
+    WEIGHTS = Path("01_runs/regression_effnetv2_s/2026-01-21_13-07-28/best_model.pt")
+    OUT_DIR = Path(".")
     NUM_WORKERS = 16
     BATCH_SIZE = 16
-    ARCH="50"
+    EFFNET_VARIANT = "v2_s"
+
 
     run_inference(csv_path=METADATA_CSV, weights_path=WEIGHTS,
-                  out_dir=Path("../"), batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
+                  out_dir=Path("./"), batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)

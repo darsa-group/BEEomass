@@ -18,9 +18,9 @@ library(plotly)
 
 N_BOOT_REP = 50
 
-learning_curve_csv = "01_runs/regression_resnet101/2025-11-20_10-59-32/epoch_results.csv"
-total_lines <- R.utils::countLines(learning_curve_csv)
-learning_curve <- fread(learning_curve_csv, nrows = total_lines - 2)
+# learning_curve_csv = "01_runs/regression_resnet101/2025-11-20_10-59-32/epoch_results.csv"
+# total_lines <- R.utils::countLines(learning_curve_csv)
+# learning_curve <- fread(learning_curve_csv, nrows = total_lines - 2)
 
 md_csv = "predictions.csv"
 metadata <- fread(md_csv)
@@ -94,11 +94,11 @@ performance_rep[,.(MAE = mean(MAE),
 ```
 ## CNN-based biomass prediction
 ```{r, message=FALSE}
-
-ggplot(learning_curve, aes(epoch, train_loss)) + 
-  geom_line(colour="blue") +
-  geom_line(aes(y=val_loss), colour="red")  + 
-  scale_y_continuous(name="loss (train: blue, val: red)")
+# 
+# ggplot(learning_curve, aes(epoch, train_loss)) + 
+#   geom_line(colour="blue") +
+#   geom_line(aes(y=val_loss), colour="red")  + 
+#   scale_y_continuous(name="loss (train: blue, val: red)")
   
 lims <- range(c(metadata$cbrDRYMASS_MG, metadata$cbrDRYMASS_MG_PRED))
 ggplot(metadata[SPLIT == "test"], 
