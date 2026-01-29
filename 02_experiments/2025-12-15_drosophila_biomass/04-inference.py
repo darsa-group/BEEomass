@@ -33,6 +33,32 @@ BATCH_SIZE = 64
 NUM_WORKERS = 4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+import torch
+
+def tta_8views(images: torch.Tensor) -> torch.Tensor:
+    """
+    images: (B, C, H, W)
+    returns: (8*B, C, H, W) in order:
+      rot0, rot90, rot180, rot270, and the same after horizontal flip
+    """
+    rots = [torch.rot90(images, k=k, dims=(2, 3)) for k in (0, 1, 2, 3)]
+    flips = [torch.flip(r, dims=(3,)) for r in rots]  # horizontal mirror (flip W)
+    return torch.cat(rots + flips, dim=0)
+
+def median_even(x: torch.Tensor, dim: int) -> torch.Tensor:
+    """
+    True median for even counts: average of the two middle values.
+    x: tensor, e.g. (B, 8)
+    returns: (B,)
+    """
+    xs, _ = torch.sort(x, dim=dim)
+    n = xs.size(dim)
+    # For n=8 -> middle indices 3 and 4
+    lo = xs.select(dim, n//2 - 1)
+    hi = xs.select(dim, n//2)
+    return 0.5 * (lo + hi)
+
 # -------------------- DATASET --------------------
 class InferenceDataset(Dataset):
     """Loads images from IMAGE_FILENAME column of a dataframe. Returns (image_tensor, index).
@@ -91,12 +117,28 @@ def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size:
     model.eval()
     preds = np.full((len(df),), np.nan, dtype=float)
 
+    model.eval()
+    preds = np.full((len(df),), np.nan, dtype=float)
+
     with torch.no_grad():
         for images, orig_indices in loader:
-            images = images.to(DEVICE)
-            outputs = model(images).detach().cpu().numpy().reshape(-1)
+            images = images.to(DEVICE)  # (B,C,H,W)
+
+            # --- TTA: make (8B,C,H,W) ---
+            aug = tta_8views(images)
+
+            # --- forward once on big batch ---
+            out = model(aug).view(-1).detach()  # (8B,)
+
+            B = images.size(0)
+            out = out.view(8, B).transpose(0, 1)  # (B,8)
+
+            # --- median across the 8 views (true median for even count) ---
+            med = median_even(out, dim=1)  # (B,)
+
+            med_np = med.cpu().numpy()
             for i, orig_idx in enumerate(orig_indices):
-                preds[orig_idx] = float(outputs[i])
+                preds[int(orig_idx)] = float(med_np[i])
 
     # append BF_PRED column to dataframe and save
     df_out = df.copy()
@@ -112,7 +154,7 @@ def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size:
 if __name__ == "__main__":
 
     METADATA_CSV = Path("metadata_enriched.csv")  # <- change me
-    WEIGHTS = Path("../../01_biomass_model/01_runs/regression_effnetv2_s/2026-01-21_13-07-28/best_model.pt")
+    WEIGHTS = Path("../../01_biomass_model/01_runs/regression_effnetv2_s/2026-01-29_14-23-33/best_model.pt")
     OUT_DIR = Path(".")
     NUM_WORKERS = 16
     BATCH_SIZE = 16
