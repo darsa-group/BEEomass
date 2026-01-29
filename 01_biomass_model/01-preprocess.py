@@ -116,6 +116,8 @@ def main(args):
         sys.exit(2)
 
     df = pd.read_csv(csv_path)
+    df = df[df["conf"] > CONF_THRESHOLD]
+
     required_cols = {"IMAGE_FILENAME", "DATASET", "DPI", "DRYMASS_MG"}
     missing = required_cols - set(df.columns)
     if missing:
@@ -206,11 +208,13 @@ def main(args):
 
     out_df = pd.DataFrame.from_records(records)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
+
     out_df.to_csv(out_csv, index=False)
     print(f"✅ Wrote updated metadata CSV: {out_csv}")
 
 
 if __name__ == "__main__":
+    CONF_THRESHOLD=0.9
     parser = argparse.ArgumentParser(description="Resize and measure background area in JPG/PNG images per dataset.")
     parser.add_argument("--csv", default="metadata.csv" , help="Path to metadata CSV (must contain IMAGE_FILENAME and dataset columns)")
     parser.add_argument("--root", default="00_data",  help="Root directory containing 01_segmented/ and 02_resized/")
