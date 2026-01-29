@@ -19,9 +19,12 @@ library(plotly)
 md_csv = "metadata_enriched.csv"
 
 metadata <- fread(md_csv)
-ggplot(metadata, aes((TRANSPARENT_PIXELS / DPI )^(1/2), DRYMASS_MG^(1/3),shape=DATASET, colour=DATASET)) + geom_point()
-ggplot(metadata, aes(BF_cbrMG_MM,shape=DATASET, colour=DATASET)) + geom_histogram()+ facet_grid(DATASET ~. )
-ggplot(metadata, aes(DRYMASS_MG^(1/3),shape=DATASET, colour=DATASET)) + geom_histogram()+ facet_grid(DATASET ~. )
+metadata <- metadata[ IS_VALID ==T]
+ggplot(metadata, aes(ROI_SIZE_MM , DRYMASS_MG^(1/3),shape=DATASET, colour=DATASET)) + geom_point(alpha=.3)  + facet_grid(DATASET ~ .)
+
+
+ggplot(metadata, aes(BF_cbrMG_MM,shape=DATASET, fill=DATASET)) + geom_histogram()+ facet_grid(DATASET ~. )
+
 
 ```
 

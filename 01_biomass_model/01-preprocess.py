@@ -23,7 +23,6 @@ import warnings
 import numpy as np
 import pandas as pd
 from PIL import Image
-from torch.xpu import device
 
 try:
     from tqdm import tqdm
@@ -31,55 +30,96 @@ try:
 except Exception:
     TQDM = False
 
+def measure_background(im: Image.Image, path: Path, white_thresh=250):
+    """
+    Return the number of foreground (non-background) pixels.
 
-def measure_background(im: Image.Image, path: Path):
-    """Return the number of background pixels depending on format."""
+    For JPG/JPEG:
+      - background is defined as near-white pixels (>= white_thresh in all RGB channels)
+
+    For PNG:
+      - background is defined as fully transparent pixels (alpha == 0)
+
+    Returns
+    -------
+    count : int
+        Number of non-background pixels
+    colname : str
+        Column name ("FOREGROUND_PIXELS")
+    """
     w, h = im.size
-    arr = np.asarray(im)
+
     if path.suffix.lower() in [".jpg", ".jpeg"]:
-        # count pure white pixels
+        arr = np.asarray(im)
         if arr.ndim == 3 and arr.shape[2] >= 3:
-            white_mask = np.all(arr[:, :, :3] == 255, axis=2)
-            return int(w * h -white_mask.sum() ), "NON_TRANSPARENT_PIXELS"
+            # near-white background (robust to JPEG + resampling)
+            bg_mask = np.all(arr[:, :, :3] >= white_thresh, axis=2)
+            fg_pixels = (~bg_mask).sum()
+            return int(fg_pixels), "FOREGROUND_PIXELS"
+
     elif path.suffix.lower() == ".png":
         if im.mode != "RGBA":
             im = im.convert("RGBA")
-            arr = np.asarray(im)
+        arr = np.asarray(im)
         alpha = arr[..., 3]
-        trans_mask = alpha == 0
-        return int(w * h - trans_mask.sum() ), "NON_TRANSPARENT_PIXELS"
-    return w * h, "NON_TRANSPARENT_PIXELS"  # default
+        bg_mask = alpha == 0
+        fg_pixels = (~bg_mask).sum()
+        return int(fg_pixels), "FOREGROUND_PIXELS"
+
+    # fallback: assume everything is foreground
+    return w * h, "FOREGROUND_PIXELS"
 
 
-def resize_and_pad(im: Image.Image, size=224):
-    """Resize image to keep aspect ratio, then pad to square with white background."""
-    # keep proportions
-    w, h = im.size
-    scale = size / max(w, h)
-    new_w, new_h = int(round(w * scale)), int(round(h * scale))
-    im_resized = im.resize((new_w, new_h), Image.LANCZOS)
-    # create white square canvas
-    canvas = Image.new("RGB", (size, size), (255, 255, 255))
-    offset = ((size - new_w) // 2, (size - new_h) // 2)
-    canvas.paste(im_resized, offset)
+def resize_and_pad(im: Image.Image, output_size: int = 224):
+    """
+    Resize an image so that its longest side equals `output_size`,
+    preserving aspect ratio, then center-pad to a square white canvas.
+
+    Returns
+    -------
+    canvas : PIL.Image.Image
+        Square RGB image of shape (output_size, output_size)
+    scale : float
+        Resize factor applied to the original image
+        (new_size = original_size * scale)
+    """
+    orig_w, orig_h = im.size
+
+    # scale so that the longest side matches output_size
+    scale = output_size / max(orig_w, orig_h)
+    new_w = int(round(orig_w * scale))
+    new_h = int(round(orig_h * scale))
+
+    resized = im.resize((new_w, new_h), resample=Image.LANCZOS)
+
+    # white square canvas
+    canvas = Image.new("RGB", (output_size, output_size), color=(255, 255, 255))
+
+    # center placement
+    x0 = (output_size - new_w) // 2
+    y0 = (output_size - new_h) // 2
+    canvas.paste(resized, (x0, y0))
+
     return canvas, scale
-
 
 def main(args):
     csv_path = Path(args.csv)
     root_dir = Path(args.root)
     out_csv = Path(args.out)
 
-    if not csv_path.exists():
+    # ---- validate inputs
+    if not csv_path.is_file():
         print(f"ERROR: CSV not found: {csv_path}", file=sys.stderr)
         sys.exit(2)
-    if not root_dir.exists():
+    if not root_dir.is_dir():
         print(f"ERROR: root dir not found: {root_dir}", file=sys.stderr)
         sys.exit(2)
 
     df = pd.read_csv(csv_path)
-    if "IMAGE_FILENAME" not in df.columns or "DATASET" not in df.columns:
-        print("ERROR: metadata csv must contain 'IMAGE_FILENAME' and 'DATASET' columns", file=sys.stderr)
+    required_cols = {"IMAGE_FILENAME", "DATASET", "DPI", "DRYMASS_MG"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        print(f"ERROR: metadata csv is missing required columns: {sorted(missing)}", file=sys.stderr)
         sys.exit(2)
 
     print(f"Loaded metadata CSV: {csv_path} (rows: {len(df)})")
@@ -87,64 +127,84 @@ def main(args):
     records = []
     iterator = df.itertuples(index=False)
     if TQDM:
-        iterator = tqdm(list(iterator), desc="processing images")
+        iterator = tqdm(iterator, total=len(df), desc="processing images")
 
     for row in iterator:
-        dataset = getattr(row, "DATASET")
-        orig_name = getattr(row, "IMAGE_FILENAME")
-        img_name = Path(orig_name).name
-        dataset_dir = root_dir / "01_segmented" / dataset
+        record = row._asdict()
+        dataset = record["DATASET"]
+        orig_name = record["IMAGE_FILENAME"]
 
-        # find jpg or png
-        jpg_path = dataset_dir / img_name
-        png_path = dataset_dir / (Path(img_name).stem + ".png")
-        if not jpg_path.exists() and not png_path.exists():
-            warnings.warn(f"Image not found for {img_name} in {dataset_dir}")
+        img_name = Path(orig_name).name
+        in_dir = root_dir / "01_segmented" / str(dataset)
+
+        # ---- locate input image (prefer original extension if present)
+        candidates = [
+            in_dir / img_name,
+            in_dir / (Path(img_name).stem + ".jpg"),
+            in_dir / (Path(img_name).stem + ".jpeg"),
+            in_dir / (Path(img_name).stem + ".png"),
+        ]
+        path = next((p for p in candidates if p.exists()), None)
+        if path is None:
+            warnings.warn(f"Image not found for {img_name} in {in_dir}")
             continue
 
-        path = jpg_path if jpg_path.exists() else png_path
+        # ---- open image
         try:
             im = Image.open(path)
         except Exception as e:
             warnings.warn(f"Failed to open {path}: {e}")
             continue
 
-        # measure background
-        count, colname = measure_background(im, path)
+        # ---- measure foreground / background (on original)
+        fg_pixels, fg_col = measure_background(im, path)  # returns (count, "NON_BACKGROUND_PIXELS")
+        record[fg_col] = fg_pixels
 
-        # if PNG, replace transparent background with white before saving
+        # ---- if PNG, composite on white for saving / model input
         if path.suffix.lower() == ".png":
-            if im.mode != "RGBA":
-                im = im.convert("RGBA")
-            bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
-            bg.paste(im, mask=im.split()[-1])
-            im = bg.convert("RGB")
+            im_rgba = im.convert("RGBA")
+            white_bg = Image.new("RGBA", im_rgba.size, (255, 255, 255, 255))
+            white_bg.paste(im_rgba, mask=im_rgba.split()[-1])
+            im = white_bg.convert("RGB")
+        else:
+            im = im.convert("RGB")
 
-        # resize and pad
-        im_resized, scale = resize_and_pad(im, 224)
+        # ---- resize + pad
+        im_resized, scale = resize_and_pad(im, output_size=224)
 
-        # output dir
-        out_dir = root_dir / "02_resized" / dataset
+        # ---- write output image
+        out_dir = root_dir / "02_resized" / str(dataset)
         out_dir.mkdir(parents=True, exist_ok=True)
-        new_name = Path(img_name).stem + ".jpg"
-        out_path = out_dir / new_name
-
+        out_path = out_dir / (Path(img_name).stem + ".jpg")
         im_resized.save(out_path, format="JPEG", quality=97, subsampling=0, optimize=True)
 
-        record = row._asdict()
-        record["ORIGINAL_IMAGE_FILENAME"] = str(path)
-        record["IMAGE_FILENAME"] = str(out_path)
-        record["SCALE"] = scale
-        record["ROI_SIZE_MM"]  = (224/scale) / record["DPI"] * 25.4
-        record["BF_cbrMG_MM"] =  record["DRYMASS_MG"] ** (1/3) / record["ROI_SIZE_MM"]
+        # ---- derived fields
+        dpi = float(record["DPI"])
+        drymass_mg = float(record["DRYMASS_MG"])
+        if dpi <= 0:
+            warnings.warn(f"Invalid DPI ({dpi}) for {img_name}; skipping derived metrics.")
+            roi_size_mm = np.nan
+            bf = np.nan
+            area_mm2 = np.nan
+        else:
+            roi_size_mm = (224 / scale) / dpi * 25.4
+            bf = (drymass_mg ** (1 / 3)) / roi_size_mm if drymass_mg > 0 else np.nan
+            area_mm2 = fg_pixels * (25.4 / dpi) ** 2
 
-        record[colname] = count
-
-        record["AREA_MM2"] = record["NON_TRANSPARENT_PIXELS"] * (25.4/ record["DPI"]) ** 2
+        record.update(
+            {
+                "ORIGINAL_IMAGE_FILENAME": str(path),
+                "IMAGE_FILENAME": str(out_path),
+                "SCALE": float(scale),
+                "ROI_SIZE_MM": float(roi_size_mm) if np.isfinite(roi_size_mm) else np.nan,
+                "BF_cbrMG_MM": float(bf) if np.isfinite(bf) else np.nan,
+                "AREA_MM2": float(area_mm2) if np.isfinite(area_mm2) else np.nan,
+            }
+        )
 
         records.append(record)
 
-    out_df = pd.DataFrame(records)
+    out_df = pd.DataFrame.from_records(records)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(out_csv, index=False)
     print(f"✅ Wrote updated metadata CSV: {out_csv}")
@@ -157,3 +217,6 @@ if __name__ == "__main__":
     parser.add_argument("--out", default="metadata_enriched.csv", help="Output CSV path")
     args = parser.parse_args()
     main(args)
+
+
+
