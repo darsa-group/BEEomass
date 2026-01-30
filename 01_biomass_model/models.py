@@ -104,14 +104,17 @@ def build_efficientnet(variant: str = "b0", pretrained: bool = True):
     # Replace classifier head with a single regression output
     # torchvision EfficientNet has model.classifier = Sequential(Dropout, Linear)
     if isinstance(model.classifier, nn.Sequential):
-        # last layer should be Linear
         in_features = model.classifier[-1].in_features
-        model.classifier[-1] = nn.Linear(in_features, 1)
+        model.classifier = nn.Sequential(
+            nn.Dropout(p=0.4),  # ← stronger dropout
+            nn.Linear(in_features, 1)
+        )
     else:
-        # fallback (unlikely, but safe)
         in_features = model.classifier.in_features
-        model.classifier = nn.Linear(in_features, 1)
-
+        model.classifier = nn.Sequential(
+            nn.Dropout(p=0.4),
+            nn.Linear(in_features, 1)
+        )
     return model
 
 

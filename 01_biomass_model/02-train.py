@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
+from  torchvision.transforms.v2 import GaussianNoise, ElasticTransform
 import torchvision.transforms.functional as F
 from models import build_efficientnet
 from datetime import datetime
@@ -44,13 +45,15 @@ STEP_LR_GAMMA = 0.5
 
 # Image size and normalization (ResNet default expected normalization)
 IMG_SIZE = 224
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD  = (0.229, 0.224, 0.225)
 
 # Label smoothing multiplicative range for training (apply per-sample)
-LABEL_SMOOTH_MIN = 0.8
-LABEL_SMOOTH_MAX = 1.2
+LABEL_SMOOTH_MIN = 0.9
+LABEL_SMOOTH_MAX = 1.1
 #how much the images can be downscaled during augmentation. this is a special
 # augmentation that also modifies the target
-DOWNSCALING_MIN = 0.5
+DOWNSCALING_MIN = 0.9
 # Device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -81,6 +84,36 @@ def compute_mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 # -------------------- DATASET --------------------
 
+
+def rot90_rand(img: Image.Image) -> Image.Image:
+    """Rotate by 0/90/180/270 degrees randomly, keeping square canvas."""
+    k = random.randint(0, 3)
+    if k == 0:
+        return img
+    # PIL transpose is fast and avoids fill artifacts for multiples of 90
+    return img.transpose([Image.ROTATE_90, Image.ROTATE_180, Image.ROTATE_270][k - 1])
+
+def make_mosaic_2x2_random(imgs, out_size: int = 224) -> Image.Image:
+    """
+    imgs: list of 4 PIL RGB images
+    Creates a 2x2 mosaic in a square canvas out_size x out_size.
+    Randomizes which image goes to which quadrant.
+    """
+    assert len(imgs) == 4
+    half = out_size // 2
+
+    # random assignment of images to quadrants
+    random.shuffle(imgs)
+
+    # resize each to half size (you can use BICUBIC or LANCZOS)
+    tiles = [im.resize((half, half), Image.BICUBIC) for im in imgs]
+
+    canvas = Image.new("RGB", (out_size, out_size), (255, 255, 255))
+    positions = [(0, 0), (half, 0), (0, half), (half, half)]
+    for tile, pos in zip(tiles, positions):
+        canvas.paste(tile, pos)
+
+    return canvas
 
 class RandomDownscale:
     """
@@ -160,6 +193,7 @@ class ImageRegDataset(Dataset):
             raise FileNotFoundError(f"Image not found: {img_path}")
 
         img = Image.open(img_path).convert("RGB")
+
         if self.rescale_aug:
             img, scale = self.rescale_aug(img)
         else:
@@ -177,8 +211,8 @@ class ImageRegDataset(Dataset):
 def random_blur_or_sharpness():
     # Randomly apply GaussianBlur or Sharpness adjustment
     aug = random.choice([
-        T.GaussianBlur(kernel_size=random.choice([3, 9]), sigma=(0.1, 4.0)),
-        T.RandomAdjustSharpness(sharpness_factor=random.uniform(0.5, 2.0), p=1.0)
+        T.GaussianBlur(kernel_size=random.choice([3, 7]), sigma=(0.1, 2.0)),
+        T.RandomAdjustSharpness(sharpness_factor=random.uniform(0.5, 1.0), p=1.0)
     ])
     return aug
 
@@ -187,22 +221,68 @@ def random_quadrant_rotation(img):
     angle = random.choice([0, 90, 180, 270])
     return F.rotate(img, angle, fill=(255, 255, 255))  # white background
 
+
+class GaussianNoisePIL:
+    """
+    Apply additive Gaussian noise to a PIL RGB image.
+    Noise is applied in [0, 255] space.
+    """
+
+    def __init__(self, sigma=5.0, p=0.5):
+        """
+        sigma: standard deviation in pixel values (0–255 scale)
+        p: probability of applying the noise
+        """
+        self.sigma = sigma
+        self.p = p
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        if random.random() > self.p:
+            return img
+
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        arr = np.asarray(img).astype(np.float32)
+
+        noise = np.random.normal(0.0, self.sigma, arr.shape)
+        arr = arr + noise
+
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+        return Image.fromarray(arr, mode="RGB")
+
 def get_transforms(split: str):
     if split == "train":
         train_transforms = T.Compose([
+
             T.RandomHorizontalFlip(p=0.5),
+
             T.Lambda(lambda img: random_quadrant_rotation(img)),
             # Color jitter (brightness, contrast, saturation, hue)
-            T.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.5),
+            T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
             # Gaussian blur (kernel size chosen relative to image size)
+
             T.Lambda(lambda img: random_blur_or_sharpness()(img)),
+            GaussianNoisePIL(sigma=7.0, p=.2),
+            T.RandomApply(
+                [ElasticTransform(alpha=50, fill=255)],
+                p=0.2
+            ),
+
             T.ToTensor(),
+            # T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            # Clamp01(),
+            # T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            # GaussianNoise(sigma=0.01),
+            # Clamp01(),
+            # T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ])
         return train_transforms
     else:
         # val/test: deterministic scaling / center crop
         return T.Compose([
             T.ToTensor(),
+            # T.Normalize(IMAGENET_MEAN, IMAGENET_STD)
         ])
 
 
@@ -219,7 +299,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, labe
     targets_all = []
 
     for images, targets in dataloader:
-        tile_images_cv2(images, cols=8, pad=2, to_bgr=True, resize_to=(128, 128), window_name="train batch")
+        tile_images_cv2(images, cols=8, pad=2, to_bgr=True, resize_to=(128, 128), window_name="train batch", show=True)
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True).unsqueeze(1)  # shape (B,1)
 
