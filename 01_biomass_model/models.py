@@ -106,13 +106,13 @@ def build_efficientnet(variant: str = "b0", pretrained: bool = True):
     if isinstance(model.classifier, nn.Sequential):
         in_features = model.classifier[-1].in_features
         model.classifier = nn.Sequential(
-            nn.Dropout(p=0.4),  # ← stronger dropout
+            nn.Dropout(p=0.6),  # ← stronger dropout
             nn.Linear(in_features, 1)
         )
     else:
         in_features = model.classifier.in_features
         model.classifier = nn.Sequential(
-            nn.Dropout(p=0.4),
+            nn.Dropout(p=0.6),
             nn.Linear(in_features, 1)
         )
     return model
