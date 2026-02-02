@@ -1,0 +1,44 @@
+---
+title: "descriptive_stats"
+output: pdf_document
+date: "2025-11-19"
+---
+
+```{r}
+rm(list=ls())
+library(data.table)   # fread
+library(ggplot2)
+library(DT)          # datatable output
+library(scales)
+library(lme4)
+library(MuMIn)
+library(plotly)
+
+library(ggplot2)
+library(ggExtra)
+
+# Paths to CSVs (adjust if needed)
+
+md_csv = "../metadata_enriched.csv"
+
+metadata <- fread(md_csv)
+metadata <- metadata[ IS_VALID ==T]
+pdf(w=6, h=6)
+ggplot(metadata, aes(ROI_SIZE_MM , DRYMASS_MG^(1/3),shape=DATASET, colour=DATASET)) + 
+  geom_point(alpha=.3)  + geom_smooth(col="black", method = "lm") +
+  facet_grid(DATASET ~ .) + theme_classic()
+
+
+ggplot(metadata, aes( BF_cbrMG_MM, ROI_SIZE_MM,shape=DATASET, colour=DATASET)) + 
+  geom_point(alpha=.3)  + geom_smooth(col="black")+
+  facet_grid(DATASET ~ .)  + theme_classic() 
+
+
+ggplot(metadata, aes( BF_cbrMG_MM,shape=DATASET, fill=DATASET, colour=DATASET)) + 
+  geom_density( alpha=.5) + theme_classic()
+  
+
+dev.off()
+```
+
+
