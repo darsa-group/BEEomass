@@ -141,3 +141,18 @@ performance_rep[,.(MAE = mean(MAE),
 # summary(mod)
 ```
 
+```{r}
+ggplot(metadata[SPLIT == "test" & NOTES=="droso"], 
+       aes(cbrDRYMASS_MG, 
+           cbrDRYMASS_MG_PRED)) +
+  geom_point(alpha=.6) + 
+  geom_smooth(aes(cbrDRYMASS_MG, cbrDRYMASS_MG_PRED), colour="black", fill="black",  inherit.aes = FALSE, method = "lm") +
+  coord_fixed()
+
+ggplot(metadata[SPLIT == "test" & NOTES=="droso"], 
+       aes(cbrDRYMASS_MG, 
+           cbrDRYMASS_MG_PRED_AREA_LM)) +
+  geom_point(alpha=.6) + 
+  geom_smooth(aes(cbrDRYMASS_MG, cbrDRYMASS_MG_PRED_AREA_LM), colour="black", fill="black",  inherit.aes = FALSE, method = "lm") +
+  coord_fixed()
+```

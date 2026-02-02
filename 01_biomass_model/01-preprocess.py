@@ -23,6 +23,8 @@ import warnings
 import numpy as np
 import pandas as pd
 from PIL import Image
+from joblib import Parallel, delayed
+import multiprocessing
 
 try:
     from tqdm import tqdm
@@ -102,119 +104,125 @@ def resize_and_pad(im: Image.Image, output_size: int = 224):
 
     return canvas, scale
 
+def process_one_row(row, root_dir: Path):
+    """
+    row: pandas namedtuple from itertuples(index=False)
+    returns: dict record or None (if skipped)
+    """
+    record = row._asdict()
+    dataset = record["DATASET"]
+    orig_name = record["IMAGE_FILENAME"]
+
+    img_name = Path(orig_name).name
+    in_dir = root_dir / "01_segmented" / str(dataset)
+
+    candidates = [
+        in_dir / img_name,
+        in_dir / (Path(img_name).stem + ".jpg"),
+        in_dir / (Path(img_name).stem + ".jpeg"),
+        in_dir / (Path(img_name).stem + ".png"),
+    ]
+    path = next((p for p in candidates if p.exists()), None)
+    if path is None:
+        return None  # skip (you can return record with a flag if you prefer)
+
+    try:
+        im = Image.open(path)
+    except Exception:
+        return None
+
+    # foreground/background measurement on original
+    fg_pixels, fg_col = measure_background(im, path)
+    record[fg_col] = fg_pixels
+
+    # composite PNG on white
+    if path.suffix.lower() == ".png":
+        im_rgba = im.convert("RGBA")
+        white_bg = Image.new("RGBA", im_rgba.size, (255, 255, 255, 255))
+        white_bg.paste(im_rgba, mask=im_rgba.split()[-1])
+        im = white_bg.convert("RGB")
+    else:
+        im = im.convert("RGB")
+
+    # resize + pad
+    im_resized, scale = resize_and_pad(im, output_size=224)
+
+    # write output image
+    out_dir = root_dir / "02_resized" / str(dataset)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / (Path(img_name).stem + ".jpg")
+    im_resized.save(out_path, format="JPEG", quality=97, subsampling=0, optimize=True)
+
+    # derived fields
+    dpi = float(record["DPI"])
+    drymass_mg = float(record["DRYMASS_MG"])
+    if dpi <= 0:
+        roi_size_mm = np.nan
+        bf = np.nan
+        area_mm2 = np.nan
+    else:
+        roi_size_mm = (224 / scale) / dpi * 25.4
+        bf = (drymass_mg ** (1 / 3)) / roi_size_mm if drymass_mg > 0 else np.nan
+        area_mm2 = fg_pixels * (25.4 / dpi) ** 2
+
+    record.update(
+        {
+            "ORIGINAL_IMAGE_FILENAME": str(path),
+            "IMAGE_FILENAME": str(out_path),
+            "SCALE": float(scale),
+            "ROI_SIZE_MM": float(roi_size_mm) if np.isfinite(roi_size_mm) else np.nan,
+            "BF_cbrMG_MM": float(bf) if np.isfinite(bf) else np.nan,
+            "AREA_MM2": float(area_mm2) if np.isfinite(area_mm2) else np.nan,
+        }
+    )
+
+    return record
+
 def main(args):
     csv_path = Path(args.csv)
     root_dir = Path(args.root)
     out_csv = Path(args.out)
 
-    # ---- validate inputs
-    if not csv_path.is_file():
-        print(f"ERROR: CSV not found: {csv_path}", file=sys.stderr)
-        sys.exit(2)
-    if not root_dir.is_dir():
-        print(f"ERROR: root dir not found: {root_dir}", file=sys.stderr)
-        sys.exit(2)
-
+    # validate...
     df = pd.read_csv(csv_path)
-    df = df[df["conf"] > CONF_THRESHOLD]
 
     required_cols = {"IMAGE_FILENAME", "DATASET", "DPI", "DRYMASS_MG"}
     missing = required_cols - set(df.columns)
+
+
     if missing:
         print(f"ERROR: metadata csv is missing required columns: {sorted(missing)}", file=sys.stderr)
         sys.exit(2)
 
+
     print(f"Loaded metadata CSV: {csv_path} (rows: {len(df)})")
 
-    records = []
-    iterator = df.itertuples(index=False)
-    if TQDM:
-        iterator = tqdm(iterator, total=len(df), desc="processing images")
+    if "CONF" in df.columns:
+        before = len(df)
+        df = df[df["CONF"] > CONF_THRESHOLD].reset_index(drop=True)
+        print(f"Filtered by CONF > {CONF_THRESHOLD}: {before} → {len(df)} rows")
+    else:
+        print("No CONF column found — skipping confidence filtering")
+    iterator = list(df.itertuples(index=False))  # joblib needs a materialized iterable
 
-    for row in iterator:
-        record = row._asdict()
-        dataset = record["DATASET"]
-        orig_name = record["IMAGE_FILENAME"]
+    n_jobs = getattr(args, "n_jobs", None) or DEFAULT_N_JOBS
 
-        img_name = Path(orig_name).name
-        in_dir = root_dir / "01_segmented" / str(dataset)
+    records = Parallel(n_jobs=n_jobs, backend="loky")(
+        delayed(process_one_row)(row, root_dir) for row in iterator
+    )
 
-        # ---- locate input image (prefer original extension if present)
-        candidates = [
-            in_dir / img_name,
-            in_dir / (Path(img_name).stem + ".jpg"),
-            in_dir / (Path(img_name).stem + ".jpeg"),
-            in_dir / (Path(img_name).stem + ".png"),
-        ]
-        path = next((p for p in candidates if p.exists()), None)
-        if path is None:
-            warnings.warn(f"Image not found for {img_name} in {in_dir}")
-            continue
-
-        # ---- open image
-        try:
-            im = Image.open(path)
-        except Exception as e:
-            warnings.warn(f"Failed to open {path}: {e}")
-            continue
-
-        # ---- measure foreground / background (on original)
-        fg_pixels, fg_col = measure_background(im, path)  # returns (count, "NON_BACKGROUND_PIXELS")
-        record[fg_col] = fg_pixels
-
-        # ---- if PNG, composite on white for saving / model input
-        if path.suffix.lower() == ".png":
-            im_rgba = im.convert("RGBA")
-            white_bg = Image.new("RGBA", im_rgba.size, (255, 255, 255, 255))
-            white_bg.paste(im_rgba, mask=im_rgba.split()[-1])
-            im = white_bg.convert("RGB")
-        else:
-            im = im.convert("RGB")
-
-        # ---- resize + pad
-        im_resized, scale = resize_and_pad(im, output_size=224)
-
-        # ---- write output image
-        out_dir = root_dir / "02_resized" / str(dataset)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / (Path(img_name).stem + ".jpg")
-        im_resized.save(out_path, format="JPEG", quality=97, subsampling=0, optimize=True)
-
-        # ---- derived fields
-        dpi = float(record["DPI"])
-        drymass_mg = float(record["DRYMASS_MG"])
-        if dpi <= 0:
-            warnings.warn(f"Invalid DPI ({dpi}) for {img_name}; skipping derived metrics.")
-            roi_size_mm = np.nan
-            bf = np.nan
-            area_mm2 = np.nan
-        else:
-            roi_size_mm = (224 / scale) / dpi * 25.4
-            bf = (drymass_mg ** (1 / 3)) / roi_size_mm if drymass_mg > 0 else np.nan
-            area_mm2 = fg_pixels * (25.4 / dpi) ** 2
-
-        record.update(
-            {
-                "ORIGINAL_IMAGE_FILENAME": str(path),
-                "IMAGE_FILENAME": str(out_path),
-                "SCALE": float(scale),
-                "ROI_SIZE_MM": float(roi_size_mm) if np.isfinite(roi_size_mm) else np.nan,
-                "BF_cbrMG_MM": float(bf) if np.isfinite(bf) else np.nan,
-                "AREA_MM2": float(area_mm2) if np.isfinite(area_mm2) else np.nan,
-            }
-        )
-
-        records.append(record)
+    # drop skipped
+    records = [r for r in records if r is not None]
 
     out_df = pd.DataFrame.from_records(records)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-
     out_df.to_csv(out_csv, index=False)
     print(f"✅ Wrote updated metadata CSV: {out_csv}")
 
 
 if __name__ == "__main__":
     CONF_THRESHOLD=0.9
+    DEFAULT_N_JOBS=8
     parser = argparse.ArgumentParser(description="Resize and measure background area in JPG/PNG images per dataset.")
     parser.add_argument("--csv", default="metadata.csv" , help="Path to metadata CSV (must contain IMAGE_FILENAME and dataset columns)")
     parser.add_argument("--root", default="00_data",  help="Root directory containing 01_segmented/ and 02_resized/")

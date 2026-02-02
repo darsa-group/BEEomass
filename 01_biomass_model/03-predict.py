@@ -154,7 +154,7 @@ if __name__ == "__main__":
     METADATA_CSV = Path("metadata_enriched.csv")  # <- change me
     # WEIGHTS = Path("runs/regression_resnet101-bak/best_model.pt")
     # WEIGHTS = Path("01_runs/regression_resnet50/2025-12-03_18-09-27/best_model.pt")
-    WEIGHTS = Path("01_runs/regression_effnetv2_s/2026-01-29_14-23-33/best_model.pt")
+    WEIGHTS = Path("01_runs/regression_effnetv2_s/2026-01-31_10-34-44/best_model.pt")
     OUT_DIR = Path(".")
     NUM_WORKERS = 16
     BATCH_SIZE = 16
