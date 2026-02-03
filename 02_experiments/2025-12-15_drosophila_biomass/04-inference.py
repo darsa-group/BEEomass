@@ -117,9 +117,6 @@ def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size:
     model.eval()
     preds = np.full((len(df),), np.nan, dtype=float)
 
-    model.eval()
-    preds = np.full((len(df),), np.nan, dtype=float)
-
     with torch.no_grad():
         for images, orig_indices in loader:
             images = images.to(DEVICE)  # (B,C,H,W)
@@ -154,7 +151,7 @@ def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size:
 if __name__ == "__main__":
 
     METADATA_CSV = Path("metadata_enriched.csv")  # <- change me
-    WEIGHTS = Path("../../01_biomass_model/01_runs/regression_effnetv2_s/2026-01-29_14-23-33/best_model.pt")
+    WEIGHTS = Path("../../01_biomass_model/01_runs/regression_effnetv2_s/2026-02-02_15-11-40/best_model.pt")
     OUT_DIR = Path(".")
     NUM_WORKERS = 16
     BATCH_SIZE = 16

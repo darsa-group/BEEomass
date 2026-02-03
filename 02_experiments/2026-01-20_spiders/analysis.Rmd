@@ -50,95 +50,36 @@ metadata[,day_of_year :=  as.numeric(format(date, "%j"))]
 ``` {r, message=FALSE}
 
 
-
-ggplot(
-  metadata,
-  aes(day_of_year, AREA_MM2)
-) + geom_point(mapping = aes(colour=location)
-) + facet_grid(species ~ .) + stat_smooth() 
-
-  
 pdf(w=16, h=9)
 
+p <- ggplot(
+  metadata[species=="BG"],
+  aes(day_of_year, cbrDRYMASS_MG_PRED)) +
+    stat_density_2d_filled() +
+   geom_point( alpha=.6) 
 
-ggplot(
-  metadata,
-  aes(sex, DRYMASS_MG_PRED, colour = temp, fill = temp)
-) +
-  facet_wrap( ~ species) +
-  geom_violin(
-    position = position_dodge(width = 0.9),
-    outlier.colour = NA,
-    colour = "black"
-  ) +
-  geom_jitter(
-    position = position_jitterdodge(
-      jitter.width = 0.15,
-      dodge.width = 0.9
-    ),
-    
-    alpha = 0.6,
-    colour = "black"
-  ) + scale_fill_manual(
-    values = c(
-      "19" = "blue",
-      "28" = "red"
-    ),
-    name = "Temperature (°C)"
-  ) 
+ggMarginal(p, margins = "y", size = 2, type = "histogram")
+
+
+p <- ggplot(
+  metadata[species=="PD"],
+  aes(day_of_year, cbrDRYMASS_MG_PRED)) +
+    stat_density_2d_filled() +
+   geom_point( alpha=.6) 
+ggMarginal(p, margins = "y", size = 2, type = "histogram")
   
 
 
 ggplot(
   metadata,
-  aes(species, AREA_MM2, colour = temp, fill = temp)
-) +
-  facet_grid( sex ~ .) +
-  geom_boxplot(
-    position = position_dodge(width = 0.9),
-    outlier.colour = NA,
-    colour = "black"
-  ) +
-  geom_jitter(
-    position = position_jitterdodge(
-      jitter.width = 0.15,
-      dodge.width = 0.9
-    ),
-    
-    alpha = 0.6,
-    colour = "black"
-  ) + scale_fill_manual(
-    values = c(
-      "19" = "blue",
-      "28" = "red"
-    ),
-    name = "Temperature (°C)"
-  )
+  aes(cbrDRYMASS_MG_PRED)) +
+    geom_histogram() +
+    facet_grid(species ~ .)
+
+  
+
 
 
 dev.off()
-```
-
-```{r}
-reps <- lapply(1:2000, function(x){
-    spl = metadata[, .(AREA_MM2 = sample(AREA_MM2, size=.N,replace = T)), by="sex,species,temp"]
-    out = spl[, .(cvar=sd(AREA_MM2)/mean(AREA_MM2)), by="sex,species,temp"]
-    out$rep=x
-    out
-})
-reps = rbindlist(reps)
-
-mean_q025_q975 <- function(x) {
-  data.frame(
-    y     = mean(x, na.rm = TRUE),
-    ymin  = quantile(x, 0.025, na.rm = TRUE),
-    ymax  = quantile(x, 0.975, na.rm = TRUE)
-  )
-}
-
-ggplot(reps, aes(species, cvar, colour = temp)) +
-  stat_summary(fun.data = mean_q025_q975) +
-  facet_grid(sex ~ .)
-
 ```
 

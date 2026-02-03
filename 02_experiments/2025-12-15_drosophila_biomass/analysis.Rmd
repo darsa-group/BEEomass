@@ -20,6 +20,7 @@ library(tidyr)
 
 md_csv = "predictions.csv"
 metadata <- fread(md_csv)
+
 #filter for high confidence detections!
 metadata = metadata[conf > 0.90]
 
