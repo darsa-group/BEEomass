@@ -1,10 +1,9 @@
 # BEEomass
 
-Code for the paper:
+Code for the [paper](https://ecoevorxiv.org/repository/view/13446/):
 
-> **TITLE**
+> **EntoScan and BEEomass: a standardized imaging system and a physically motivated model for high-throughput dry biomass estimation of arthropods**
 > Melika Baghooee, Robert Thalheim, Fevziye Hasan, Søren Toft, Torsten Nygård Kristensen, and Quentin Geissmann
-> *Preprint forthcoming*
 
 The training dataset (paired images and dry biomass measurements, ~2,100 specimens / ~8,400 images) is publicly available at [https://zenodo.org/records/20543262](https://zenodo.org/records/20543262).
 
