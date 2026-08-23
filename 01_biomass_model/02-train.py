@@ -49,11 +49,11 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD  = (0.229, 0.224, 0.225)
 
 # Label smoothing multiplicative range for training (apply per-sample)
-LABEL_SMOOTH_MIN = 0.9
-LABEL_SMOOTH_MAX = 1.1
+LABEL_SMOOTH_MIN = 0.8
+LABEL_SMOOTH_MAX = 1.2
 #how much the images can be downscaled during augmentation. this is a special
 # augmentation that also modifies the target
-DOWNSCALING_MIN = 0.9
+DOWNSCALING_MIN = 0.5
 # Device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -202,7 +202,10 @@ class ImageRegDataset(Dataset):
         if self.transform is not None:
             img = self.transform(img)
 
-        target = float(row["BF_cbrMG_MM"]) * scale ** 3
+        # BF = M^(1/3)/L, so a simulated shrink by `scale` gives (scale^3 M)^(1/3)/L = scale * BF.
+        # NOT scale**3: BF is already a cube root, so cubing applies the exponent twice.
+        # This deviates from Eq (6) of the manuscript, which is incorrect.
+        target = float(row["BF_cbrMG_MM"]) * scale
         # print(float(row["BF_cbrMG_MM"]), scale, target)
         return img, torch.tensor(target, dtype=torch.float32)
 
@@ -211,8 +214,8 @@ class ImageRegDataset(Dataset):
 def random_blur_or_sharpness():
     # Randomly apply GaussianBlur or Sharpness adjustment
     aug = random.choice([
-        T.GaussianBlur(kernel_size=random.choice([3, 7]), sigma=(0.1, 2.0)),
-        T.RandomAdjustSharpness(sharpness_factor=random.uniform(0.5, 1.0), p=1.0)
+        T.GaussianBlur(kernel_size=random.choice([3, 9]), sigma=(0.1, 4.0)),
+        T.RandomAdjustSharpness(sharpness_factor=random.uniform(0.5, 2.0), p=1.0)
     ])
     return aug
 
@@ -251,18 +254,23 @@ class GaussianNoisePIL:
         arr = np.clip(arr, 0, 255).astype(np.uint8)
         return Image.fromarray(arr, mode="RGB")
 
+def apply_random_blur_or_sharpness(img):
+    """Module-level wrapper: a local lambda cannot be pickled for dataloader workers."""
+    return random_blur_or_sharpness()(img)
+
+
 def get_transforms(split: str):
     if split == "train":
         train_transforms = T.Compose([
 
             T.RandomHorizontalFlip(p=0.5),
 
-            T.Lambda(lambda img: random_quadrant_rotation(img)),
+            T.Lambda(random_quadrant_rotation),
             # Color jitter (brightness, contrast, saturation, hue)
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
             # Gaussian blur (kernel size chosen relative to image size)
 
-            T.Lambda(lambda img: random_blur_or_sharpness()(img)),
+            T.Lambda(apply_random_blur_or_sharpness),
             GaussianNoisePIL(sigma=7.0, p=.2),
             T.RandomApply(
                 [ElasticTransform(alpha=50, fill=255)],
