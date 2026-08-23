@@ -122,7 +122,9 @@ class RandomDownscale:
     return both image and scale factor.
     """
 
-    def __init__(self, min_scale=DOWNSCALING_MIN, max_scale=1.0):
+    def __init__(self, min_scale=None, max_scale=1.0):
+        # Read the global at call time so --downscale-min can override it.
+        min_scale = DOWNSCALING_MIN if min_scale is None else min_scale
         assert 0 < min_scale <= max_scale <= 1.0
         self.min_scale = min_scale
         self.max_scale = max_scale
@@ -641,6 +643,19 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=NUM_EPOCHS)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=LR)
+    parser.add_argument("--downscale-min", type=float, default=DOWNSCALING_MIN,
+                        help="Lower bound of the scale-augmentation factor (1.0 disables it)")
+    parser.add_argument("--label-smooth-min", type=float, default=LABEL_SMOOTH_MIN,
+                        help="Multiplicative target jitter lower bound (set both to 1.0 to disable)")
+    parser.add_argument("--label-smooth-max", type=float, default=LABEL_SMOOTH_MAX,
+                        help="Multiplicative target jitter upper bound")
     args = parser.parse_args()
+
+    # Override module-level constants so the augmentation is sweepable without edits.
+    DOWNSCALING_MIN = args.downscale_min
+    LABEL_SMOOTH_MIN = args.label_smooth_min
+    LABEL_SMOOTH_MAX = args.label_smooth_max
+    print(f"augmentation: downscale_min={DOWNSCALING_MIN} "
+          f"label_smooth=({LABEL_SMOOTH_MIN}, {LABEL_SMOOTH_MAX})", flush=True)
 
     run_training(csv_path=Path(args.csv), root_img_dir=Path(args.root), out_dir=Path(args.out), batch_size=args.batch_size, num_epochs=args.epochs, lr=args.lr)
