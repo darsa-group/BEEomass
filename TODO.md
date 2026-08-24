@@ -293,10 +293,36 @@ several of them are easy to get wrong.
 and the batch/LR pair (64 / 1.4e-4), both of which the paper is being updated for.
 Label smoothing re-enabled per Eq (7); Gaussian noise and elastic removed.
 
-**Do not adopt it on a single run.** It differs from `NoSmooth` in two ways at
-once (smoothing on, two augmentations gone), so a difference cannot be attributed,
-and run-to-run seed variance is still unmeasured (§4b). Nothing under ~0.001 is
-interpretable. Minimum before adoption: **3 seeds per arm** via `--seed`.
+**Result (500 epochs, completed 2026-08-24 22:56).** Selection epoch 446;
+best val MAE **0.01531**, the lowest of any run. Test set, paired bootstrap over
+the same 972 images / 340 specimens:
+
+| comparison | pooled ΔMAE | 95% CI | |
+|---|---:|---|---|
+| MS-aligned − Feb 02 (published) | −0.00057 | [−0.00660, +0.00519] | n.s. |
+| MS-aligned − NoSmooth | +0.00045 | [−0.00410, +0.00554] | n.s. |
+
+Every per-dataset comparison is also n.s. **The three models are statistically
+indistinguishable on test.** Absolute test figures (bootstrap, paper's estimator):
+MS-aligned pooled MAE 0.0800 / R² 0.9482; NoSmooth 0.0793 / 0.9500; Feb 02
+0.0809 / 0.9477.
+
+Note the paired CIs here are ±0.006, far wider than the ±0.001 of the TTA
+comparison — two independent training runs disagree per-image much more than two
+inference modes of one model, so 340 test specimens cannot resolve differences
+below ~0.006 MAE. **No amount of re-running will make these separable on this
+test set.**
+
+**The useful conclusion:** re-enabling label smoothing per Eq (7) and removing the
+two undocumented augmentations costs nothing measurable. The manuscript's
+described method and the code can be reconciled without giving up performance —
+which is the reason to adopt it, not a performance gain.
+
+**Do not claim it is better.** It differs from `NoSmooth` in two ways at once
+(smoothing on, two augmentations gone), so even a real difference could not be
+attributed, and run-to-run seed variance is still unmeasured (§4b). If seed
+variance is wanted for its own sake, 3 seeds at 250 epochs per arm via `--seed`;
+but note this run selected at epoch 446, so 250 would have truncated it.
 
 Compare with the paper's own estimator — one random image per specimen, resample,
 500 reps — not raw per-image means, which read ~0.006 higher on R².
