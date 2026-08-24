@@ -204,3 +204,7 @@ pyvenv.cfg
 *.Rproj
 *.Rhistory
 **/00_data/
+
+# EntoScan/BEEomass manuscript sources - kept locally, not tracked here
+10_06_2026_EntoScan_manuscript.zip
+10_06_2026_EntoScan_manuscript/
