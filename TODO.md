@@ -327,7 +327,48 @@ but note this run selected at epoch 446, so 250 would have truncated it.
 Compare with the paper's own estimator — one random image per specimen, resample,
 500 reps — not raw per-image means, which read ~0.006 higher on R².
 
-### 5b. If adopted, regenerate everything downstream
+### 5b. DONE — adopted 2026-08-24
+
+`MSaligned_2026-08-24_16-54-27/best_model.pt` is now the default `--weights` in
+`03-predict.py` and both `04-inference.py`. All three `predictions.csv`
+regenerated, all three `analysis.Rmd` re-knitted. Previous outputs preserved as
+`predictions_nosmooth_backup.csv` alongside the existing `_feb02_` and `_tta_`
+backups (all untracked, as before).
+
+Test-set performance, bootstrap, adopted model: EntoScan MAE 0.0813
+[0.0683, 0.0955], R² 0.9516 [0.9277, 0.9691]; biodiscover-S MAE 0.0769
+[0.0583, 0.0999], R² 0.8522 [0.6926, 0.9471]. Statistically indistinguishable
+from both predecessors (§5a).
+
+**Note `01_biomass_model/best_model.pt` at the repo root is still the February
+file and is now doubly stale.** Nothing references it (§3c) — delete it.
+
+### 5b-bis. The case studies move far more than the test set does
+
+Total predicted dry mass over each case study's full detection set:
+
+| | drosophila (n=1,913) | spiders (n=3,296) |
+|---|---:|---:|
+| Feb 02 (published) | 510.1 mg | 3450.1 mg |
+| NoSmooth | 539.8 mg (+5.8%) | 3178.9 mg (−7.9%) |
+| **adopted (MS-aligned)** | **512.3 mg (+0.4%)** | **4056.4 mg (+17.6%)** |
+
+Three models that cannot be told apart on the test set (all pairwise
+comparisons n.s., §5a) produce **spider community biomass estimates spanning
+27.6%** — NoSmooth to adopted. Drosophila is stable across all three; spiders
+are not.
+
+Two reasons, both worth stating in the paper. `M = (BF·L)³`, so a small BF shift
+is cubed. And the case studies are out-of-distribution with no ground truth
+(§4e), so nothing constrains the extrapolation — test-set equivalence does not
+transfer to them.
+
+**Consequence:** any absolute community-biomass number from the spider case study
+carries a model-choice uncertainty far larger than its reported precision, and
+that uncertainty is invisible in the test metrics. Report relative/temporal
+patterns, which are what Fig 3c actually shows, or attach this sensitivity.
+
+### 5c. Regenerating everything downstream (reference)
 
 Order matters:
 
@@ -341,7 +382,7 @@ The case studies have no ground truth (§4e): swapping the model moved their
 population biomass estimates by +6% (drosophila) and +19% (spiders) with nothing
 to check against. That shift is a reason for care, not evidence of improvement.
 
-### 5c. Publish as a *new version*, not a new record
+### 5d. Publish as a *new version*, not a new record
 
 Use Zenodo's "New version" on
 [10.5281/zenodo.20624495](https://doi.org/10.5281/zenodo.20624495). That keeps the
@@ -359,14 +400,14 @@ Include in the upload, none of which the current record has:
   assignment are both baked into it (§1a, "Training does not read DPI" below)
 - a one-line statement of what changed versus the previous version
 
-### 5d. Republish the dataset record too, and keep the two consistent
+### 5e. Republish the dataset record too, and keep the two consistent
 
 §1a–1c. Do the dataset first or at the same time: a corrected model trained on
 labels the public dataset still gets wrong would be worse than the current state,
 because the two records would disagree with no way for a reader to tell which is
 right.
 
-### 5e. Then update the manuscript
+### 5f. Then update the manuscript
 
 §2. The Eq (6) correction, the LR/batch pair, and the model-record version all
 have to tell the same story. Do not update the paper before the records exist —

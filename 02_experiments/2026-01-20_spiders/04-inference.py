@@ -140,7 +140,7 @@ if __name__ == "__main__":
     parser.add_argument("--csv", type=Path, default=Path("metadata_enriched.csv"))
     parser.add_argument("--weights", type=Path,
                         default=Path("../../01_biomass_model/01_runs/regression_effnetv2_s/"
-                                     "2026-02-02_15-11-40/best_model.pt"))
+                                     "MSaligned_2026-08-24_16-54-27/best_model.pt"))
     parser.add_argument("--out", type=Path, default=Path("."))
     parser.add_argument("--variant", default="v2_s")
     parser.add_argument("--batch-size", type=int, default=16)
