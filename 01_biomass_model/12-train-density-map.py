@@ -25,7 +25,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
-from torchvision.transforms.v2 import ElasticTransform
 import torchvision.transforms.functional as TF
 
 from torchvision.models.segmentation import deeplabv3_resnet50, deeplabv3_mobilenet_v3_large
@@ -174,21 +173,6 @@ def random_quadrant_rotation(img):
     angle = random.choice([0, 90, 180, 270])
     return TF.rotate(img, angle, fill=(255, 255, 255))
 
-class GaussianNoisePIL:
-    def __init__(self, sigma=5.0, p=0.5):
-        self.sigma = sigma
-        self.p = p
-
-    def __call__(self, img: Image.Image) -> Image.Image:
-        if random.random() > self.p:
-            return img
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        arr = np.asarray(img).astype(np.float32)
-        noise = np.random.normal(0.0, self.sigma, arr.shape)
-        arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
-        return Image.fromarray(arr, mode="RGB")
-
 def get_transforms(split: str):
     if split == "train":
         return T.Compose([
@@ -196,8 +180,6 @@ def get_transforms(split: str):
             T.Lambda(random_quadrant_rotation),
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
             T.Lambda(lambda img: random_blur_or_sharpness()(img)),
-            GaussianNoisePIL(sigma=7.0, p=0.2),
-            T.RandomApply([ElasticTransform(alpha=50, fill=255)], p=0.2),
             T.ToTensor(),
         ])
     else:

@@ -16,7 +16,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
-from  torchvision.transforms.v2 import GaussianNoise, ElasticTransform
 import torchvision.transforms.functional as F
 from models import build_efficientnet
 from datetime import datetime
@@ -234,35 +233,6 @@ def random_quadrant_rotation(img):
     return F.rotate(img, angle, fill=(255, 255, 255))  # white background
 
 
-class GaussianNoisePIL:
-    """
-    Apply additive Gaussian noise to a PIL RGB image.
-    Noise is applied in [0, 255] space.
-    """
-
-    def __init__(self, sigma=5.0, p=0.5):
-        """
-        sigma: standard deviation in pixel values (0–255 scale)
-        p: probability of applying the noise
-        """
-        self.sigma = sigma
-        self.p = p
-
-    def __call__(self, img: Image.Image) -> Image.Image:
-        if random.random() > self.p:
-            return img
-
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-
-        arr = np.asarray(img).astype(np.float32)
-
-        noise = np.random.normal(0.0, self.sigma, arr.shape)
-        arr = arr + noise
-
-        arr = np.clip(arr, 0, 255).astype(np.uint8)
-        return Image.fromarray(arr, mode="RGB")
-
 def apply_random_blur_or_sharpness(img):
     """Module-level wrapper: a local lambda cannot be pickled for dataloader workers."""
     return random_blur_or_sharpness()(img)
@@ -280,17 +250,11 @@ def get_transforms(split: str):
             # Gaussian blur (kernel size chosen relative to image size)
 
             T.Lambda(apply_random_blur_or_sharpness),
-            GaussianNoisePIL(sigma=7.0, p=.2),
-            T.RandomApply(
-                [ElasticTransform(alpha=50, fill=255)],
-                p=0.2
-            ),
 
             T.ToTensor(),
             # T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
             # Clamp01(),
             # T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-            # GaussianNoise(sigma=0.01),
             # Clamp01(),
             # T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ])
@@ -662,6 +626,8 @@ if __name__ == "__main__":
                         help="Multiplicative target jitter lower bound (set both to 1.0 to disable)")
     parser.add_argument("--label-smooth-max", type=float, default=LABEL_SMOOTH_MAX,
                         help="Multiplicative target jitter upper bound")
+    parser.add_argument("--seed", type=int, default=SEED,
+                        help="Random seed; vary it to measure run-to-run variance")
     args = parser.parse_args()
 
     # Override module-level constants so the augmentation is sweepable without edits.
@@ -670,8 +636,10 @@ if __name__ == "__main__":
     DOWNSCALING_MIN = args.downscale_min
     LABEL_SMOOTH_MIN = args.label_smooth_min
     LABEL_SMOOTH_MAX = args.label_smooth_max
-    print(f"augmentation: downscale_min={DOWNSCALING_MIN} "
-          f"label_smooth=({LABEL_SMOOTH_MIN}, {LABEL_SMOOTH_MAX})", flush=True)
+    SEED = args.seed
+    print(f"seed={SEED} augmentation: downscale_min={DOWNSCALING_MIN} "
+          f"label_smooth=({LABEL_SMOOTH_MIN}, {LABEL_SMOOTH_MAX}) "
+          f"gaussian_noise=off elastic=off", flush=True)
 
     run_training(csv_path=Path(args.csv), root_img_dir=Path(args.root), out_dir=Path(args.out),
                  batch_size=args.batch_size, num_epochs=args.epochs, lr=args.lr,
