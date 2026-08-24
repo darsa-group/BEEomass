@@ -281,7 +281,74 @@ adopt the new model.
 
 ---
 
-## 5. Decided, no action needed
+## 5. Publishing a new model — do it in this order
+
+The current release (§1c-bis) is the February run, trained under the wrong Eq (6)
+exponent. Replacing it is worth doing, but the steps are order-dependent and
+several of them are easy to get wrong.
+
+### 5a. Finish and evaluate the retrain
+
+`MSaligned_2026-08-24_16-54-27` — manuscript-aligned except the exponent (`BF·s`)
+and the batch/LR pair (64 / 1.4e-4), both of which the paper is being updated for.
+Label smoothing re-enabled per Eq (7); Gaussian noise and elastic removed.
+
+**Do not adopt it on a single run.** It differs from `NoSmooth` in two ways at
+once (smoothing on, two augmentations gone), so a difference cannot be attributed,
+and run-to-run seed variance is still unmeasured (§4b). Nothing under ~0.001 is
+interpretable. Minimum before adoption: **3 seeds per arm** via `--seed`.
+
+Compare with the paper's own estimator — one random image per specimen, resample,
+500 reps — not raw per-image means, which read ~0.006 higher on R².
+
+### 5b. If adopted, regenerate everything downstream
+
+Order matters:
+
+1. `03-predict.py` → `01_biomass_model/predictions.csv`
+2. `02_experiments/*/04-inference.py` → both case-study `predictions.csv`
+3. Re-knit all three `analysis.Rmd`. **The case-study figures are `Rplots.pdf`,
+   not `analysis.pdf`** (§4d).
+4. Re-derive every number in Results and Fig 3a/3b/3c.
+
+The case studies have no ground truth (§4e): swapping the model moved their
+population biomass estimates by +6% (drosophila) and +19% (spiders) with nothing
+to check against. That shift is a reason for care, not evidence of improvement.
+
+### 5c. Publish as a *new version*, not a new record
+
+Use Zenodo's "New version" on
+[10.5281/zenodo.20624495](https://doi.org/10.5281/zenodo.20624495). That keeps the
+concept DOI resolving and leaves the old version citable, which matters because
+the submitted paper reports the February weights. A fresh record would orphan
+every existing citation and leave two unrelated DOIs for the same model.
+
+Include in the upload, none of which the current record has:
+
+- the weights (`best_model.pt`), not the whole run directory of checkpoints
+- the **exact training command** and the resolved config line the run logged
+  (`seed=… downscale_min=… label_smooth=(…) gaussian_noise=off elastic=off`)
+- the **git commit hash** the run was launched from
+- which `metadata_enriched.csv` produced the labels — the DPI fix and the split
+  assignment are both baked into it (§1a, "Training does not read DPI" below)
+- a one-line statement of what changed versus the previous version
+
+### 5d. Republish the dataset record too, and keep the two consistent
+
+§1a–1c. Do the dataset first or at the same time: a corrected model trained on
+labels the public dataset still gets wrong would be worse than the current state,
+because the two records would disagree with no way for a reader to tell which is
+right.
+
+### 5e. Then update the manuscript
+
+§2. The Eq (6) correction, the LR/batch pair, and the model-record version all
+have to tell the same story. Do not update the paper before the records exist —
+the paper should cite versions that resolve.
+
+---
+
+## 6. Decided, no action needed
 
 - **The 92 beetles are not outliers in val or test.** Median absolute residual
   sits at the 56th (val) and 61st (test) percentile of the other images; in
