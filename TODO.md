@@ -93,8 +93,9 @@ matches it. Check once before republishing.
   also state that, with the sensitivity: a corrected retrain moves test MAE
   0.0824 → 0.0807 with overlapping bootstrap CIs, conclusions unaffected.
   *(Code already fixed in `783179b`; the paper is what needs updating.)*
-- **Learning rate: 1×10⁻⁴ → 1.4×10⁻⁴.** The code uses the higher value
-  (`sqrt` scaling from the batch-size increase). Update the paper to match.
+- **Learning rate: 1×10⁻⁴ → 1.4×10⁻⁴, and batch size: 32 → 64.** These go
+  together: the LR is `sqrt(64/32)` scaling from the batch increase, so the paper
+  must be updated for both or neither. Update to match the code.
 - **`README.md:38`** repeats the cube-of-the-scale-factor error — same fix.
 - **Dataset size, `02_methods.tex:40`.** "approximately 8,400 images of 2,100
   individual specimens" matches nothing. Correct figures:
