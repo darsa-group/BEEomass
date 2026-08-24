@@ -63,9 +63,9 @@ pdf(w=16, h=9)
 
 ggplot(
   metadata,
-  aes(sex, DRYMASS_MG_PRED, colour = temp, fill = temp)
+  aes(species, DRYMASS_MG_PRED, colour = temp, fill = temp)
 ) +
-  facet_wrap( ~ species) +
+  facet_grid( sex ~ .) +
   geom_violin(
     position = position_dodge(width = 0.9),
     outlier.colour = NA,

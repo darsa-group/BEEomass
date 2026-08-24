@@ -89,7 +89,7 @@ def get_inference_transform():
 
 # -------------------- INFERENCE --------------------
 
-def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, root_img_dir: Path = "."):
+def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, root_img_dir: Path = ".", tta: bool = False):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(csv_path)
@@ -110,21 +110,19 @@ def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size:
         for images, orig_indices in loader:
             images = images.to(DEVICE)  # (B,C,H,W)
 
-            # --- TTA: make (8B,C,H,W) ---
-            aug = tta_8views(images)
-
-            # --- forward once on big batch ---
-            out = model(aug).view(-1).detach()  # (8B,)
-
             B = images.size(0)
-            out = out.view(8, B).transpose(0, 1)  # (B,8)
 
-            # --- median across the 8 views (true median for even count) ---
-            med = median_even(out, dim=1)  # (B,)
+            if tta:
+                aug = tta_8views(images)                    # (8B,C,H,W)
+                out = model(aug).view(-1).detach()          # (8B,)
+                out = out.view(8, B).transpose(0, 1)        # (B,8)
+                vals = median_even(out, dim=1)              # (B,)
+            else:
+                vals = model(images).view(-1).detach()      # (B,)
 
-            med_np = med.cpu().numpy()
+            vals_np = vals.cpu().numpy()
             for i, orig_idx in enumerate(orig_indices):
-                preds[int(orig_idx)] = float(med_np[i])
+                preds[int(orig_idx)] = float(vals_np[i])
     # append BF_PRED column to dataframe and save
     df_out = df.copy()
     df_out["BF_PRED"] = preds
@@ -138,13 +136,23 @@ def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size:
 
 if __name__ == "__main__":
 
-    METADATA_CSV = Path("metadata_enriched.csv")  # <- change me
-    WEIGHTS = Path("../../01_biomass_model/01_runs/regression_effnetv2_s/2026-02-02_15-11-40/best_model.pt")
-    OUT_DIR = Path(".")
-    NUM_WORKERS = 16
-    BATCH_SIZE = 16
-    EFFNET_VARIANT="v2_s"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--csv", type=Path, default=Path("metadata_enriched.csv"))
+    parser.add_argument("--weights", type=Path,
+                        default=Path("../../01_biomass_model/01_runs/regression_effnetv2_s/"
+                                     "2026-02-02_15-11-40/best_model.pt"))
+    parser.add_argument("--out", type=Path, default=Path("."))
+    parser.add_argument("--variant", default="v2_s")
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--num-workers", type=int, default=16)
+    parser.add_argument("--tta", action="store_true",
+                        help="enable 8-view test-time augmentation (off by default)")
+    args = parser.parse_args()
 
+    # run_inference reads this global at call time, so set it before calling.
+    EFFNET_VARIANT = args.variant
 
-    run_inference(csv_path=METADATA_CSV, weights_path=WEIGHTS,
-                  out_dir=Path("./"), batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
+    print(f"weights: {args.weights}")
+    run_inference(csv_path=args.csv, weights_path=args.weights,
+                  out_dir=args.out, batch_size=args.batch_size, num_workers=args.num_workers,
+                  tta=args.tta)

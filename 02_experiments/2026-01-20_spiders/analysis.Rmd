@@ -17,6 +17,7 @@ library(plotly)
 
 library(dplyr)
 library(tidyr)
+library(ggExtra)     # ggMarginal, used below but previously not imported
 
 md_csv = "predictions.csv"
 metadata <- fread(md_csv)
