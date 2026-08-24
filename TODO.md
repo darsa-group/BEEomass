@@ -73,6 +73,20 @@ trained on all 9,481. Say this explicitly in the record description and in the
 paper's data-availability statement, along with the reason biodiscover-S is not
 redistributable.
 
+### 1c-bis. The published model is the February one, trained under the Eq (6) bug
+
+The model is released separately at
+[10.5281/zenodo.20624495](https://doi.org/10.5281/zenodo.20624495) ("BEEomass",
+Baghooee & Geissmann, published 2026-06-10, CC-BY-4.0). It contains exactly one
+file: **`2026-02-02_15-11-40.zip` (75.7 MB)** — byte-size matches the local
+`01_runs/regression_effnetv2_s/2026-02-02_15-11-40.zip`.
+
+So the publicly released weights are the February run, which means they were
+trained with `BF' = BF·s³` (the erroneous exponent), dropout 0.4, and TTA still
+in the inference path. Whatever the paper ends up saying about Eq (6) (§2a) must
+also be true of this record, and if the model is ever replaced the record needs a
+new version rather than a silent swap.
+
 ### 1d. Verify the archive against its own index
 
 Everything above was checked against the record's `metadata.csv`, the only file
@@ -110,9 +124,28 @@ matches it. Check once before republishing.
   it sums to 9,481 / 3,142. It is only the prose that disagrees, with the paper's
   own figure. Split the sentence: one clause for what the model was trained on,
   one for what the DOI contains (§1c).
-- **Abstract "R² > 0.95"** overstates. Results are 0.95 (EntoScan) and 0.89
-  (biodiscover-S); neither exceeds 0.95 and the claim generalises from the better
-  dataset. `04_discussion.tex:30` repeats it.
+- **Abstract "R² > 0.95" is not supported.** Under the paper's own bootstrap
+  (one random image per specimen, resample, 500 reps), on the test split:
+
+  | | R² (1−SS_res/SS_tot) | 95% CI | P(R² > 0.95) |
+  |---|---:|---|---:|
+  | EntoScan | 0.9553 | [0.9352, 0.9702] | 0.73 |
+  | biodiscover-S | 0.8451 | [0.6948, 0.9371] | 0.00 |
+  | pooled | 0.9495 | [0.9256, 0.9684] | **0.51** |
+
+  Pooled is a coin flip, not "> 0.95". Only EntoScan alone clears it, and only
+  73% of the time. The February model (the published one) is very slightly worse
+  on both: pooled 0.9486, EntoScan 0.9505. `04_discussion.tex:30` repeats the
+  claim. Say "≈0.95 on EntoScan, 0.85–0.89 on biodiscover-S" and drop the
+  inequality.
+
+- **Two different quantities are both called R².** `analysis.Rmd` uses
+  `summary(lm(PRED ~ OBS))$r.squared` — squared correlation, which does not
+  penalise bias or slope error. `02-train.py` uses `1 − SS_res/SS_tot`. On the
+  test split they agree for EntoScan (0.9581 vs 0.9579) but differ by **+0.030
+  for biodiscover-S** (0.8730 vs 0.8428), so the published 0.89 is the forgiving
+  form and the coefficient of determination is 0.84. State which is used, and
+  prefer the second. Changing it moves a published number, so decide deliberately.
 - **Spider case study describes two species, not one.** PD (*P. degeeri*, 1,913)
   and BG (1,383) across the four named sites. "1,913 individuals were imaged" is
   the PD count; 3,296 were imaged. Fig 3c's caption promises "species-specific
