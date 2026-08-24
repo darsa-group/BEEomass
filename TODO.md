@@ -259,6 +259,15 @@ adopt the new model.
 - **The splits are clean.** Zero specimens span more than one split and zero
   `INSECT_ID`s are shared between the two data sources, so the grouping is
   genuinely by specimen and the val/test numbers are honest.
+- **Training does not read DPI, and stays that way.** `02-train.py` requires only
+  `IMAGE_FILENAME`, `DATASET` and `BF_cbrMG_MM`; DPI is consumed once, upstream,
+  in `01-preprocess.py:157`, where it produces `ROI_SIZE_MM`, `BF_cbrMG_MM` and
+  `AREA_MM2`. Deliberate — do not plumb DPI into the trainer.
+
+  The consequence to remember: correcting a DPI means **re-running
+  `01-preprocess.py`** to regenerate the derived columns, not editing the DPI
+  column in place. And since the model is scale-blind (every image is resized to
+  224), a wrong DPI is invisible to it — it just learns a wrong target.
 - **TTA removed** (`13c94b6`): worth +0.00079 MAE overall, 95% CI
   [−0.00020, +0.00179], for 8× the inference compute. Removing it also makes the
   manuscript's "training only" statement true.
