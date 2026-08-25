@@ -154,7 +154,7 @@ if __name__ == "__main__":
     parser.add_argument("--csv", type=Path, default=Path("metadata_enriched.csv"),
                         help="metadata CSV to predict over")
     parser.add_argument("--weights", type=Path,
-                        default=Path("01_runs/regression_effnetv2_s/MSaligned_2026-08-24_16-54-27/best_model.pt"),
+                        default=Path("01_runs/regression_effnetv2_s/MSalignedNoLS_2026-08-25_08-58-33/selected_model.pt"),
                         help="checkpoint to load")
     parser.add_argument("--out", type=Path, default=Path("."), help="directory to write predictions.csv into")
     parser.add_argument("--variant", default="v2_s", help="EfficientNet variant the checkpoint was trained with")
