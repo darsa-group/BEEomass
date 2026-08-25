@@ -18,6 +18,15 @@ library(plotly)
 set.seed(42)
 N_BOOT_REP = 500
 
+# Dataset colours: the two ends of the RdBu ramp, so the panels match the
+# published figure (red Biodiscover, blue EntoScan) instead of ggplot's default
+# salmon/teal, and stay consistent with the RdBu density panels in the spider
+# case study.
+DATASET_COLS <- c("biodiscover-S" = "#D6604D", "EntoScan" = "#4393C3")
+# name must match the shape scale's title, otherwise ggplot draws two legends.
+# No fill scale: nothing maps fill here, and adding one only raises a warning.
+scale_dataset <- scale_colour_manual(values = DATASET_COLS, name = "DATASET")
+
 # learning_curve_csv = "01_runs/regression_resnet101/2025-11-20_10-59-32/epoch_results.csv"
 # total_lines <- R.utils::countLines(learning_curve_csv)
 # learning_curve <- fread(learning_curve_csv, nrows = total_lines - 2)
@@ -59,6 +68,7 @@ ggplot(metadata[SPLIT == "test"],
            cbrDRYMASS_MG_PRED_AREA_LM, 
            shape=DATASET, colour=DATASET)) +
   geom_point(alpha=.6) + geom_smooth(method = "lm") +
+  scale_dataset +
   coord_fixed(xlim = lims, ylim = lims)
 ggsave("plot-area.svg", width = 16, height = 9, device = "svg")
 
@@ -109,6 +119,7 @@ ggplot(metadata[SPLIT == "test"],
            colour=DATASET)) +
   geom_point(alpha=.6) + 
   geom_smooth(aes(cbrDRYMASS_MG, cbrDRYMASS_MG_PRED), colour="black", fill="black",  inherit.aes = FALSE, method = "lm") + 
+  scale_dataset +
   coord_fixed(xlim = lims, ylim = lims)
 
 ggsave("plot-cnn.svg", width = 16, height = 9, device = "svg")
@@ -204,6 +215,7 @@ ggplot(plot_dt,
           size = 5) +
 
   facet_wrap(~ MODEL) +
+  scale_dataset +
   coord_fixed(xlim = lims, ylim = lims) +
   labs(x = "Observed mass",
        y = "Predicted mass")
