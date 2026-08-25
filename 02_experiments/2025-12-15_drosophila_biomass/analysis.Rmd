@@ -40,7 +40,11 @@ metadata <- metadata %>%
 
 metadata <- metadata %>%
   mutate(
-    temp = factor(temp, levels = c("19", "28"), ordered = TRUE)
+    temp = factor(temp, levels = c("19", "28"), ordered = TRUE),
+    species_full = factor(species,
+      levels = c("EQU", "LUT", "MEL", "SIM", "VIR"),
+      labels = c("D. equinoxialis", "D. lutescens", "D. melanogaster",
+                 "D. simulans", "D. virilis"))
   )
 metadata <- as.data.table(metadata)
 
@@ -63,9 +67,9 @@ pdf(w=16, h=9)
 
 ggplot(
   metadata,
-  aes(species, DRYMASS_MG_PRED, colour = temp, fill = temp)
+  aes(sex, DRYMASS_MG_PRED, colour = temp, fill = temp)
 ) +
-  facet_grid( sex ~ .) +
+  facet_wrap( ~ species_full) +
   geom_violin(
     position = position_dodge(width = 0.9),
     outlier.colour = NA,
@@ -85,7 +89,8 @@ ggplot(
       "28" = "red"
     ),
     name = "Temperature (°C)"
-  ) 
+  ) +
+  labs(x = "Sex", y = "Predicted Drymass [mg]")
   
 
 
