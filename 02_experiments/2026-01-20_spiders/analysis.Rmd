@@ -56,22 +56,24 @@ pdf("Rplots.pdf", w=16, h=9)
 p <- ggplot(
   metadata[species=="BG"],
   aes(day_of_year, cbrDRYMASS_MG_PRED)) +
-    stat_density_2d_filled() +
+    stat_density_2d_filled(bins = 9) +
+    scale_fill_brewer(palette = "RdBu", direction = -1, name = "density") +
    geom_point( alpha=.6) 
 
-ggMarginal(p, margins = "y", size = 2, type = "histogram")
-svg("plot-spider-BG.svg", width = 16, height = 9)
-print(ggMarginal(p, margins = "y", size = 2, type = "histogram")); dev.off()
+pm <- ggMarginal(p, margins = "y", size = 2, type = "histogram")
+ggsave("plot-spider-BG.svg", plot = pm, width = 16, height = 9, device = "svg")
+pm
 
 
 p <- ggplot(
   metadata[species=="PD"],
   aes(day_of_year, cbrDRYMASS_MG_PRED)) +
-    stat_density_2d_filled() +
+    stat_density_2d_filled(bins = 9) +
+    scale_fill_brewer(palette = "RdBu", direction = -1, name = "density") +
    geom_point( alpha=.6) 
-ggMarginal(p, margins = "y", size = 2, type = "histogram")
-svg("plot-spider-PD.svg", width = 16, height = 9)
-print(ggMarginal(p, margins = "y", size = 2, type = "histogram")); dev.off()
+pm <- ggMarginal(p, margins = "y", size = 2, type = "histogram")
+ggsave("plot-spider-PD.svg", plot = pm, width = 16, height = 9, device = "svg")
+pm
   
 
 
