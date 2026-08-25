@@ -139,13 +139,19 @@ matches it. Check once before republishing.
   claim. Say "≈0.95 on EntoScan, 0.85–0.89 on biodiscover-S" and drop the
   inequality.
 
-- **Two different quantities are both called R².** `analysis.Rmd` uses
-  `summary(lm(PRED ~ OBS))$r.squared` — squared correlation, which does not
-  penalise bias or slope error. `02-train.py` uses `1 − SS_res/SS_tot`. On the
-  test split they agree for EntoScan (0.9581 vs 0.9579) but differ by **+0.030
-  for biodiscover-S** (0.8730 vs 0.8428), so the published 0.89 is the forgiving
-  form and the coefficient of determination is 0.84. State which is used, and
-  prefer the second. Changing it moves a published number, so decide deliberately.
+- **State which R² is reported.** Two different quantities carry the name in this
+  project: `analysis.Rmd` and `analysis-01.Rmd` use
+  `summary(lm(PRED ~ OBS))$r.squared` — squared correlation — while
+  `02-train.py` uses `1 − SS_res/SS_tot`. **Decided: the manuscript reports the
+  squared correlation**, which is what the submitted version already used, so no
+  published number moves. The Methods should say so explicitly rather than
+  leaving "coefficient of determination" to be interpreted.
+
+  Worth knowing what the choice costs. The two agree on EntoScan (0.957 vs
+  0.955) because it is well calibrated, but on Biodiscover the CNN reads 0.884
+  against 0.850, and the area baseline 0.710 against 0.634 — squared correlation
+  does not penalise the systematic offset both show at the low end. Pooled they
+  agree (0.956 vs 0.956), which is why the figure annotation is unaffected.
 
 ### 2b. Missing from Methods — needed for reproduction
 
@@ -221,6 +227,27 @@ argument with no default.
 `00_data/02_resized/` prefix, so `--root` has no effect and the script only works
 when run from `01_biomass_model/`. The docstring claims resolution as
 `<root>/<DATASET>/<IMAGE_FILENAME>`, which is not what happens.
+
+### 3d. Checkpoint selection — done, but resting on one run
+
+`841e200` replaced `argmin(val_loss)` with the argmin of an 11-epoch centred
+rolling median, because the criterion is noise-dominated on the plateau: across
+the four completed runs the spread within epoch ≥ 150 is 21–30% of the median and
+the epoch-to-epoch SD is comparable to or larger than the entire remaining drift.
+
+It mattered here. In `MSalignedNoLS`, `argmin` picked epoch 129 and the smoothed
+rule picked 204; on test the epoch-129 checkpoint gives pooled MAE 0.0840 against
+0.0811 at epoch 200 and 0.0792 at epoch 500 — the old rule was worst of every
+checkpoint tried. Smoothing also moves the February run's pick from 254 to 494.
+
+**Every one of those comparisons is n.s.**, and this is a single run. The
+diagnosis is solid; the ranking of the alternatives is not. Confirm with the seed
+replicates (§4b) before treating the improvement as real. Weight averaging over
+the last few checkpoints performed equivalently (0.0796) and removes the
+selection lottery altogether — worth testing properly.
+
+Also note selection happens at a 50-epoch granularity, so the smoothed argmin at
+204 resolved to the checkpoint at 200. `--checkpoint-every` lowers that.
 
 ### 3c. `01_biomass_model/best_model.pt` at the repo root is stale
 
@@ -505,6 +532,15 @@ the paper should cite versions that resolve.
   oversight; do not re-raise it. Consequently "1,913 individuals were imaged" is
   correct for the experiment as reported. The analysis code still generates a BG
   panel, so expect it in `Rplots.pdf` and ignore it.
+- **Generated figure panels are tracked, not ignored.** Every analysis emits
+  `plot-*.svg` and those are committed (`fece683`), unlike the PDF and PNG output
+  which `.gitignore` excludes. Deliberate: it makes the exact panels behind a
+  revision recoverable. No `*.svg` rule was added, so the hand-authored
+  `data_figure/drawing.svg` is unaffected. Regenerating figures will show SVG
+  churn in `git status` — that is expected.
+- **Checkpoint selection uses a smoothed validation criterion** (`841e200`), not
+  the raw argmin — see §3d. Do not revert it to `argmin` without reading that
+  section.
 - **TTA removed** (`13c94b6`): worth +0.00079 MAE overall, 95% CI
   [−0.00020, +0.00179], for 8× the inference compute. Removing it also makes the
   manuscript's "training only" statement true.
