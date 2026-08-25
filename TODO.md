@@ -262,10 +262,23 @@ is a trap.
 ### 4a. The ANOVA behind Figure 3b is not in the repository
 
 `02_methods.tex` lines 304–309 describe a Type III ANOVA with an `emmeans`
-post-hoc, and Fig 3b's `***`/`ns` annotations depend on it. No `Anova()`,
-`aov()`, `emmeans` or log-transform exists anywhere in the repo. Either write and
-commit that code, or remove the annotations. **This is the largest
-reproducibility gap.**
+post-hoc, and Fig 3b's `***`/`ns` annotations depend on it.
+
+Searched exhaustively: no `Anova()`, `aov()`, `emmeans`, `TukeyHSD` or
+`contr.sum` appears in any commit reachable from any ref, in any file type, nor
+in any untracked file. `analysis-01.Rmd` is a Figure 3a script and never touches
+the drosophila data; the drosophila `analysis.Rmd` fits no model at all. So the
+published annotations were produced outside this repository.
+
+**Status: awaiting Melika's code / reanalysis. Do not write a replacement.**
+
+For reference only — a reconstruction from the Methods text reproduced all ten
+published annotations (`***` for four species in both sexes, `ns` for
+*D. virilis* in both) on the current predictions, with `species:temp`
+F(4, 1893) = 108.5. It is deliberately **not** committed, because the F values
+depend on a contrast choice (`contr.sum`, without which `Anova(type = 3)` tests
+main effects against an arbitrary reference level) that may not match hers.
+Note `car` is not installed in this environment and would need adding.
 
 ### 4b. Run-to-run seed variance is still unmeasured
 
