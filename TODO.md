@@ -310,16 +310,31 @@ buried warning, **but the mass histogram at `analysis.Rmd:75` uses the unfiltere
 `metadata` and includes all 354.** So one document reports seasonal figures over
 2,067 animals and a distribution over 2,421, with nothing saying so.
 
-Filter once, explicitly, up front:
+**DECIDED: drop the undated specimens altogether.** Not "drop them from the
+seasonal figures" — remove them from the analysis entirely, so every figure and
+every number describes the same animals. Filter once, explicitly, immediately
+after the confidence filter at `analysis.Rmd:26`:
 
 ```r
 n_before <- nrow(metadata)
 metadata <- metadata[!is.na(date)]
-message(sprintf("dropped %d detections with unparseable dates", n_before - nrow(metadata)))
+message(sprintf("dropped %d detections with unrecoverable collection dates",
+                n_before - nrow(metadata)))
 ```
 
-or keep them for the distribution plot deliberately and state the difference in
-the caption.
+Do this even if the dates are later recovered — recovering them changes which
+rows survive, not the need for the filter to be explicit rather than an accident
+of `NA` propagation through `ggplot`.
+
+**What changes when this lands.** The analysed set becomes **2,067** animals
+(PD 1,163, BG 904), not 2,421. Total predicted biomass drops from 1,406.4 mg to
+**1,241.2 mg**, because the undated animals carry **11.7%** of it. Anything
+already quoting 2,421 or a biomass total over the full set needs updating, and
+the current knitted `Rplots.pdf` predates this filter.
+
+The undated animals are not an unusual subset — median predicted mass 0.344 mg
+against 0.351 mg for the dated ones — so removing them should not shift the
+distribution, only the totals and the n.
 
 ### 4f. The case studies have no ground truth
 
