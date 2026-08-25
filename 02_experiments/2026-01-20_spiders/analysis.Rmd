@@ -18,6 +18,7 @@ library(plotly)
 library(dplyr)
 library(tidyr)
 library(ggExtra)     # ggMarginal, used below but previously not imported
+library(RColorBrewer)
 
 md_csv = "predictions.csv"
 metadata <- fread(md_csv)
@@ -56,8 +57,17 @@ pdf("Rplots.pdf", w=16, h=9)
 p <- ggplot(
   metadata[species=="BG"],
   aes(day_of_year, cbrDRYMASS_MG_PRED)) +
-    stat_density_2d_filled(bins = 9) +
-    scale_fill_brewer(palette = "RdBu", direction = -1, name = "density") +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster",
+                    contour = FALSE, n = 200) +
+    scale_fill_gradientn(
+      # RdBu reversed, with the darkest blues dropped so low-density areas read
+      # pale rather than navy, matching the published panel
+      colours = rev(RColorBrewer::brewer.pal(11, "RdBu"))[3:11],
+      name = "density") +
+    guides(fill = guide_colourbar(direction = "horizontal",
+                                  title.position = "top",
+                                  barwidth = 12, barheight = 0.8)) +
+    theme(legend.position = "top", legend.justification = "left") +
    geom_point( alpha=.6) 
 
 pm <- ggMarginal(p, margins = "y", size = 2, type = "histogram")
@@ -68,8 +78,17 @@ pm
 p <- ggplot(
   metadata[species=="PD"],
   aes(day_of_year, cbrDRYMASS_MG_PRED)) +
-    stat_density_2d_filled(bins = 9) +
-    scale_fill_brewer(palette = "RdBu", direction = -1, name = "density") +
+    stat_density_2d(aes(fill = after_stat(density)), geom = "raster",
+                    contour = FALSE, n = 200) +
+    scale_fill_gradientn(
+      # RdBu reversed, with the darkest blues dropped so low-density areas read
+      # pale rather than navy, matching the published panel
+      colours = rev(RColorBrewer::brewer.pal(11, "RdBu"))[3:11],
+      name = "density") +
+    guides(fill = guide_colourbar(direction = "horizontal",
+                                  title.position = "top",
+                                  barwidth = 12, barheight = 0.8)) +
+    theme(legend.position = "top", legend.justification = "left") +
    geom_point( alpha=.6) 
 pm <- ggMarginal(p, margins = "y", size = 2, type = "histogram")
 ggsave("plot-spider-PD.svg", plot = pm, width = 16, height = 9, device = "svg")
