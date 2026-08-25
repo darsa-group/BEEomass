@@ -208,3 +208,6 @@ pyvenv.cfg
 # EntoScan/BEEomass manuscript sources - kept locally, not tracked here
 *_EntoScan_manuscript*.zip
 *_EntoScan_manuscript*/
+
+# Assembled Figure 3 material - regenerated, not tracked
+figure3_material/
