@@ -58,6 +58,10 @@ LABEL_SMOOTH_MAX = 1.2
 # augmentation that also modifies the target
 DOWNSCALING_MIN = 0.5
 
+# Checkpoint cadence, and the window of the centred rolling median used to pick one.
+CHECKPOINT_EVERY = 50
+SELECTION_WINDOW = 11
+
 # Per-batch OpenCV debug display; off by default, see --debug-tiles.
 DEBUG_TILES = False
 # Device
@@ -497,6 +501,34 @@ def tile_images_cv2(
     return canvas_disp
 
 
+def select_checkpoint(out_dir: Path, val_losses, window: int = 11, every: int = 50):
+    """Pick a checkpoint by the smoothed validation loss rather than its raw minimum.
+
+    Returns (epoch, path) and writes `selected_model.pt`. Because checkpoints are only
+    written every `every` epochs, the nearest saved epoch to the smoothed argmin is used;
+    the offset is reported so it is never silent.
+    """
+    import shutil
+    s = pd.Series(val_losses)
+    if len(s) < 2:
+        return None, None
+    smooth = s.rolling(window, center=True, min_periods=1).median()
+    target = int(smooth.idxmin()) + 1                      # epochs are 1-based
+    saved = sorted(int(p.stem.replace("checkpoint_epoch", ""))
+                   for p in out_dir.glob("checkpoint_epoch*.pt"))
+    if not saved:
+        return target, None
+    nearest = min(saved, key=lambda e: abs(e - target))
+    src = out_dir / f"checkpoint_epoch{nearest}.pt"
+    data = torch.load(src, map_location="cpu")
+    state = data["model_state_dict"] if isinstance(data, dict) and "model_state_dict" in data else data
+    torch.save(state, out_dir / "selected_model.pt")
+    if nearest != target:
+        print(f"  smoothed argmin at epoch {target}; nearest saved checkpoint is {nearest} "
+              f"(offset {nearest - target:+d}). Lower --checkpoint-every to reduce this.", flush=True)
+    return nearest, out_dir / "selected_model.pt"
+
+
 def run_training(
     csv_path: Path,
     root_img_dir: Path,
@@ -557,7 +589,7 @@ def run_training(
 
         # checkpoint
         ckpt_path = out_dir / f"checkpoint_epoch{epoch}.pt"
-        if epoch % 50 ==0:
+        if epoch % CHECKPOINT_EVERY == 0:
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
@@ -584,6 +616,19 @@ def run_training(
         }
         row_df = pd.DataFrame([row])
         row_df.to_csv(results_csv_path, mode="a", header=False, index=False)
+
+    # -------- model selection --------
+    # The per-epoch validation loss is noise-dominated once the curve plateaus: its
+    # epoch-to-epoch SD is comparable to the entire remaining drift, so argmin over
+    # 500 epochs picks whichever epoch happened to land in a noise dip. Selecting on
+    # a centred rolling median of the validation loss instead. This cannot be done
+    # online (it needs the future), so it runs here, against the periodic checkpoints.
+    sel_epoch, sel_path = select_checkpoint(out_dir, history["val_loss"],
+                                            window=SELECTION_WINDOW,
+                                            every=CHECKPOINT_EVERY)
+    if sel_path is not None:
+        print(f"Selected checkpoint: epoch {sel_epoch} -> {sel_path.name} "
+              f"(smoothed argmin, window {SELECTION_WINDOW})", flush=True)
 
     # final test evaluation
     test_loss, test_r2, test_mae = validate(model, test_loader, criterion, device, epoch="test")
@@ -628,6 +673,10 @@ if __name__ == "__main__":
                         help="Multiplicative target jitter upper bound")
     parser.add_argument("--seed", type=int, default=SEED,
                         help="Random seed; vary it to measure run-to-run variance")
+    parser.add_argument("--checkpoint-every", type=int, default=CHECKPOINT_EVERY,
+                        help="Epoch interval at which checkpoints are written")
+    parser.add_argument("--selection-window", type=int, default=SELECTION_WINDOW,
+                        help="Centred rolling-median window used to select a checkpoint (1 = raw argmin)")
     args = parser.parse_args()
 
     # Override module-level constants so the augmentation is sweepable without edits.
@@ -637,6 +686,8 @@ if __name__ == "__main__":
     LABEL_SMOOTH_MIN = args.label_smooth_min
     LABEL_SMOOTH_MAX = args.label_smooth_max
     SEED = args.seed
+    CHECKPOINT_EVERY = args.checkpoint_every
+    SELECTION_WINDOW = args.selection_window
     print(f"seed={SEED} augmentation: downscale_min={DOWNSCALING_MIN} "
           f"label_smooth=({LABEL_SMOOTH_MIN}, {LABEL_SMOOTH_MAX}) "
           f"gaussian_noise=off elastic=off", flush=True)
