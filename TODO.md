@@ -272,7 +272,48 @@ target.
 (`pdf(w=16, h=9)` … `dev.off()`) mid-chunk. Those plots go to `Rplots.pdf`, not
 into the knitted `analysis.pdf`. `Rplots.pdf` is the actual case-study figure.
 
-### 4e. The case studies have no ground truth
+### 4e. Recover the collection dates for five spider samples
+
+Five vials carry `2022-00-00` in their data-matrix label — an invalid month and
+day, i.e. a "date unknown" sentinel:
+
+```
+SPI_011_BG_HHJ_2022-00-00     SPI_038_PD_MSJ_2022-00-00
+SPI_028_PD_FHJ_2022-00-00     SPI_047_PD_UTJ_2022-00-00
+SPI_034_PD_MSJ_2022-00-00
+```
+
+They are five distinct field samples — those `sample_id`s never appear with a
+real date — spanning all four sites (MSJ 268, HHJ 108, UTJ 97, FHJ 49 detections)
+and both species (PD 414, BG 108). The `2022` is almost certainly part of the
+sentinel: every genuinely dated sample is 2023, 2024 or 2025, and none is 2022.
+
+**Ask whoever ran the field sampling whether the dates are recoverable from a
+field notebook or the sample database.** It is 522 detections (15.8% of all),
+**354 of them surviving `conf > 0.90` — 14.6% of the analysed set.** That is a
+large piece of the seasonal series to lose. And if the label is literal rather
+than a sentinel, these were collected in 2022 and extend the study by a year.
+
+**Meanwhile, fix the silent inconsistency they cause.** `as.POSIXct` turns the
+placeholder into `NA` (verified: a true `NA`, not a date coerced to 2021-11-30 —
+some parsers do that and would silently place these animals at day-of-year 334).
+`ggplot` then drops them from the two time-course density plots with only a
+buried warning, **but the mass histogram at `analysis.Rmd:75` uses the unfiltered
+`metadata` and includes all 354.** So one document reports seasonal figures over
+2,067 animals and a distribution over 2,421, with nothing saying so.
+
+Filter once, explicitly, up front:
+
+```r
+n_before <- nrow(metadata)
+metadata <- metadata[!is.na(date)]
+message(sprintf("dropped %d detections with unparseable dates", n_before - nrow(metadata)))
+```
+
+or keep them for the distribution plot deliberately and state the difference in
+the caption.
+
+### 4f. The case studies have no ground truth
 
 Drosophila and spiders are applications, not validations. Swapping the model
 changed their population biomass estimates by +6% and +19% with nothing to check
@@ -360,7 +401,7 @@ are not.
 
 Two reasons, both worth stating in the paper. `M = (BF·L)³`, so a small BF shift
 is cubed. And the case studies are out-of-distribution with no ground truth
-(§4e), so nothing constrains the extrapolation — test-set equivalence does not
+(§4f), so nothing constrains the extrapolation — test-set equivalence does not
 transfer to them.
 
 **Consequence:** any absolute community-biomass number from the spider case study
@@ -378,7 +419,7 @@ Order matters:
    not `analysis.pdf`** (§4d).
 4. Re-derive every number in Results and Fig 3a/3b/3c.
 
-The case studies have no ground truth (§4e): swapping the model moved their
+The case studies have no ground truth (§4f): swapping the model moved their
 population biomass estimates by +6% (drosophila) and +19% (spiders) with nothing
 to check against. That shift is a reason for care, not evidence of improvement.
 
