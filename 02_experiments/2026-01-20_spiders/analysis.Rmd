@@ -51,7 +51,7 @@ metadata[,day_of_year :=  as.numeric(format(date, "%j"))]
 ``` {r, message=FALSE}
 
 
-pdf(w=16, h=9)
+pdf("Rplots.pdf", w=16, h=9)
 
 p <- ggplot(
   metadata[species=="BG"],
@@ -60,6 +60,8 @@ p <- ggplot(
    geom_point( alpha=.6) 
 
 ggMarginal(p, margins = "y", size = 2, type = "histogram")
+svg("plot-spider-BG.svg", width = 16, height = 9)
+print(ggMarginal(p, margins = "y", size = 2, type = "histogram")); dev.off()
 
 
 p <- ggplot(
@@ -68,6 +70,8 @@ p <- ggplot(
     stat_density_2d_filled() +
    geom_point( alpha=.6) 
 ggMarginal(p, margins = "y", size = 2, type = "histogram")
+svg("plot-spider-PD.svg", width = 16, height = 9)
+print(ggMarginal(p, margins = "y", size = 2, type = "histogram")); dev.off()
   
 
 

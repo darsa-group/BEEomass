@@ -1,0 +1,219 @@
+---
+title: "Biomass analysis"
+output: pdf_document
+date: "2026-01-30"
+---
+
+```{r, message=FALSE}
+
+rm(list=ls())
+library(data.table)   # fread
+library(ggplot2)
+library(DT)          # datatable output
+library(scales)
+library(lme4)
+library(MuMIn)
+library(plotly)
+
+set.seed(42)
+N_BOOT_REP = 500
+
+# learning_curve_csv = "01_runs/regression_resnet101/2025-11-20_10-59-32/epoch_results.csv"
+# total_lines <- R.utils::countLines(learning_curve_csv)
+# learning_curve <- fread(learning_curve_csv, nrows = total_lines - 2)
+
+md_csv = "predictions.csv"
+metadata <- fread(md_csv)
+
+metadata = metadata[IS_VALID == TRUE]
+metadata[, DRYMASS_MG_PRED := (BF_PRED*ROI_SIZE_MM)^3 ]
+metadata[, cbrDRYMASS_MG := DRYMASS_MG^ (1/3)]
+metadata[, cbrDRYMASS_MG_PRED := DRYMASS_MG_PRED^ (1/3)]
+metadata[, sqrtAREA_MM := AREA_MM2^(1/2)]
+```
+
+## Data overview
+
+``` {r, message=FALSE}
+ggplot(metadata, aes(cbrDRYMASS_MG, sqrtAREA_MM, shape=DATASET, colour=DATASET)) + 
+    geom_point(alpha=.3)  + 
+    geom_smooth(method = "lm") 
+    
+
+ggplot(metadata, aes(cbrDRYMASS_MG, sqrtAREA_MM, shape=DATASET, colour=DATASET)) + 
+    geom_point(alpha=.6)  + 
+    geom_smooth(method = "lm") +
+    facet_grid( . ~ SPLIT)
+metadata[, .N, by=c("DATASET", "SPLIT")]
+```
+## Area-based biomass prediction
+```{r, message=FALSE}
+area_model <- lm(cbrDRYMASS_MG ~ sqrtAREA_MM, metadata[SPLIT == "train"])
+# area_model <- lmer(cbrDRYMASS_MG ~ sqrtAREA_MM + (1 | INSECT_ID),
+#                    data = metadata[SPLIT == "train"])
+summary(area_model)
+metadata[, cbrDRYMASS_MG_PRED_AREA_LM := predict(area_model, metadata, allow.new.levels = TRUE)]
+lims <- range(c(metadata$cbrDRYMASS_MG, metadata$cbrDRYMASS_MG_PRED_AREA_LM))
+ggplot(metadata[SPLIT == "test"],
+       aes(cbrDRYMASS_MG, 
+           cbrDRYMASS_MG_PRED_AREA_LM, 
+           shape=DATASET, colour=DATASET)) +
+  geom_point(alpha=.6) + geom_smooth(method = "lm") +
+  coord_fixed(xlim = lims, ylim = lims)
+ggsave("plot-area.svg", width = 16, height = 9, device = "svg")
+
+
+summary_dt = rbindlist(
+    lapply(1:N_BOOT_REP,
+        function(x) {
+          subset = metadata[SPLIT == "test"] [ ,.SD[sample(1:.N, 1),], by="INSECT_ID"]
+          subset = subset[sample(1:.N,.N, replace=T)]
+          out = subset[, .(cbrDRYMASS_MG,cbrDRYMASS_MG_PRED_AREA_LM, DATASET)]
+          out[, REP := x]
+          }
+        )
+)
+
+performance_rep = summary_dt[, 
+             .(
+               MAE = mean(abs(cbrDRYMASS_MG-cbrDRYMASS_MG_PRED_AREA_LM)),
+               R2 = summary(lm(cbrDRYMASS_MG_PRED_AREA_LM ~ cbrDRYMASS_MG))$r.squared
+               )
+           ,
+           by=c("REP", "DATASET")]
+
+performance_rep[,.(MAE = mean(MAE),
+                   MAE_conf_l = quantile(MAE, c(0.025)),
+                   MAE_conf_h = quantile(MAE, c(0.975)),
+                   R2 = mean(R2),
+                   R2_conf_l = quantile(R2, c(0.025)),
+                   R2_conf_h = quantile(R2, c(0.975))
+                   ), by=DATASET]
+
+
+
+```
+## CNN-based biomass prediction
+```{r, message=FALSE}
+# 
+# ggplot(learning_curve, aes(epoch, train_loss)) + 
+#   geom_line(colour="blue") +
+#   geom_line(aes(y=val_loss), colour="red")  + 
+#   scale_y_continuous(name="loss (train: blue, val: red)")
+  
+lims <- range(c(metadata$cbrDRYMASS_MG, metadata$cbrDRYMASS_MG_PRED))
+ggplot(metadata[SPLIT == "test"], 
+       aes(cbrDRYMASS_MG, 
+           cbrDRYMASS_MG_PRED, 
+           shape=DATASET, 
+           colour=DATASET)) +
+  geom_point(alpha=.6) + 
+  geom_smooth(aes(cbrDRYMASS_MG, cbrDRYMASS_MG_PRED), colour="black", fill="black",  inherit.aes = FALSE, method = "lm") + 
+  coord_fixed(xlim = lims, ylim = lims)
+
+ggsave("plot-cnn.svg", width = 16, height = 9, device = "svg")
+
+
+summary_dt = rbindlist(
+    lapply(1:N_BOOT_REP,
+        function(x) {
+          subset = metadata[SPLIT == "test"] [ ,.SD[sample(1:.N, 1),], by="INSECT_ID"]
+          subset = subset[sample(1:.N,.N, replace=T)]
+          out = subset[, .(cbrDRYMASS_MG,cbrDRYMASS_MG_PRED, DATASET)]
+          out[, REP := x]
+          }
+        )
+)
+
+performance_rep = summary_dt[, 
+             .(
+               MAE = mean(abs(cbrDRYMASS_MG-cbrDRYMASS_MG_PRED)),
+               R2 = summary(lm(cbrDRYMASS_MG_PRED ~ cbrDRYMASS_MG))$r.squared
+               )
+           ,
+           by=c("REP", "DATASET")]
+
+performance_rep[,.(MAE = mean(MAE),
+  MAE_conf_l = quantile(MAE, c(0.025)),
+  MAE_conf_h = quantile(MAE, c(0.975)),
+  R2 = mean(R2),
+  R2_conf_l = quantile(R2, c(0.025)),
+  R2_conf_h = quantile(R2, c(0.975))
+  ), by=DATASET]
+
+
+# summary(mod)
+```
+
+
+```{r, message=FALSE}
+
+# --- Combine AREA + CNN predictions ---
+plot_dt <- melt(
+  metadata[SPLIT == "test"],
+  id.vars = c("cbrDRYMASS_MG", "DATASET"),
+  measure.vars = c("cbrDRYMASS_MG_PRED_AREA_LM",
+                   "cbrDRYMASS_MG_PRED"),
+  variable.name = "MODEL",
+  value.name = "PRED"
+)
+
+# --- Nice labels ---
+plot_dt[, MODEL := factor(MODEL,
+  levels = c("cbrDRYMASS_MG_PRED_AREA_LM",
+             "cbrDRYMASS_MG_PRED"),
+  labels = c("Area model", "CNN model")
+)]
+
+# --- Shared axis limits ---
+lims <- range(c(plot_dt$cbrDRYMASS_MG, plot_dt$PRED), na.rm = TRUE)
+
+# --- R2 for the black pooled regression line ---
+r2_dt <- plot_dt[, {
+  fit <- lm(PRED ~ cbrDRYMASS_MG)
+  .(R2 = summary(fit)$r.squared)
+}, by = MODEL]
+
+r2_dt[, label := sprintf("R² = %.3f", R2)]
+
+r2_dt[, `:=`(
+  x = min(plot_dt$cbrDRYMASS_MG),
+  y = max(plot_dt$PRED)
+)]
+
+ggplot(plot_dt,
+       aes(cbrDRYMASS_MG, PRED,
+           shape = DATASET, colour = DATASET)) +
+  geom_point(alpha = .6) +
+
+  # dataset-specific regression lines
+  geom_smooth(method = "lm", se = FALSE) +
+
+  # overall regression line (black)
+  geom_smooth(aes(cbrDRYMASS_MG, PRED),
+              method = "lm",
+              colour = "black",
+              se = FALSE,
+              inherit.aes = FALSE) +
+  
+  geom_text(data = r2_dt,
+          aes(x = x, y = y, label = label),
+          inherit.aes = FALSE,
+          hjust = 0,
+          vjust = 1,
+          size = 5) +
+
+  facet_wrap(~ MODEL) +
+  coord_fixed(xlim = lims, ylim = lims) +
+  labs(x = "Observed mass",
+       y = "Predicted mass")
+
+ggsave("plot-combined.svg", width = 16, height = 9, device = "svg")
+
+# --- Show plot ---
+
+```
+
+```
+
+

@@ -55,7 +55,7 @@ metadata <- as.data.table(metadata)
 ``` {r, message=FALSE}
 
 
-pdf(w=16, h=9)
+pdf("Rplots.pdf", w=16, h=9)
 
 # counts <- metadata %>%
 #   group_by(species, sex) %>%
@@ -91,6 +91,7 @@ ggplot(
     name = "Temperature (°C)"
   ) +
   labs(x = "Sex", y = "Predicted Drymass [mg]")
+ggsave("plot-drosophila-mass.svg", width = 16, height = 9, device = "svg")
   
 
 
@@ -119,6 +120,7 @@ ggplot(
     ),
     name = "Temperature (°C)"
   )
+ggsave("plot-drosophila-area.svg", width = 16, height = 9, device = "svg")
 
 
 dev.off()
