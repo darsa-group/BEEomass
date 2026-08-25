@@ -289,11 +289,22 @@ rewritten on 2026-02-02 (`9aa2dbb`, `1d23c69`). Recover a run's era from
 The often-quoted "0.01458 best ever" is from the old label set and is not a valid
 target.
 
-### 4d. `Rplots.pdf`, not `analysis.pdf`
+### 4d. `Rplots.pdf`, not `analysis.pdf` — and its two spider panels overlap
 
 `analysis.Rmd` in **both** case studies opens a second graphics device
-(`pdf(w=16, h=9)` … `dev.off()`) mid-chunk. Those plots go to `Rplots.pdf`, not
-into the knitted `analysis.pdf`. `Rplots.pdf` is the actual case-study figure.
+(`pdf("Rplots.pdf", w=16, h=9)` … `dev.off()`) mid-chunk. Those plots go to
+`Rplots.pdf`, not into the knitted `analysis.pdf`.
+
+**The spider `Rplots.pdf` is not usable as a figure source.** `ggMarginal()`
+returns a gtable, and printing a gtable calls `grid.draw` *without*
+`grid.newpage`, so the BG and PD panels are drawn onto the **same page**, PD over
+BG. It is visible in the marginal histogram, which is plainly two histograms
+superimposed. This is long-standing, not introduced by any recent change.
+
+Use the per-panel SVGs instead — `plot-spider-PD.svg`, `plot-spider-BG.svg`, and
+their drosophila equivalents. Those go through `ggsave` and are correct. If
+`Rplots.pdf` is wanted as well, the fix is a `grid::grid.newpage()` before each
+draw *after the first* (calling it before the first adds a blank leading page).
 
 ### 4e. Recover the collection dates for five spider samples
 
