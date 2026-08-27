@@ -70,9 +70,7 @@ p <- ggplot(
     theme(legend.position = "top", legend.justification = "left") +
    geom_point( alpha=.6) 
 
-pm <- ggMarginal(p, margins = "y", size = 2, type = "histogram")
-ggsave("plot-spider-BG.svg", plot = pm, width = 16, height = 9, device = "svg")
-pm
+ggMarginal(p, margins = "y", size = 2, type = "histogram")
 
 
 p <- ggplot(
@@ -90,9 +88,7 @@ p <- ggplot(
                                   barwidth = 12, barheight = 0.8)) +
     theme(legend.position = "top", legend.justification = "left") +
    geom_point( alpha=.6) 
-pm <- ggMarginal(p, margins = "y", size = 2, type = "histogram")
-ggsave("plot-spider-PD.svg", plot = pm, width = 16, height = 9, device = "svg")
-pm
+ggMarginal(p, margins = "y", size = 2, type = "histogram")
   
 
 
