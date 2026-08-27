@@ -5,7 +5,18 @@ Code for the [paper](https://ecoevorxiv.org/repository/view/13446/):
 > **EntoScan and BEEomass: a standardized imaging system and a physically motivated model for high-throughput dry biomass estimation of arthropods**
 > Melika Baghooee, Robert Thalheim, Fevziye Hasan, Søren Toft, Torsten Nygård Kristensen, and Quentin Geissmann
 
-The training dataset (paired images and dry biomass measurements, ~2,100 specimens / ~8,400 images) is publicly available at [https://zenodo.org/records/20543262](https://zenodo.org/records/20543262).
+**Data and model.** Both are on Zenodo, linked by their concept DOIs, which always
+resolve to the most recent version:
+
+| | DOI |
+|---|---|
+| Dataset — paired images and dry biomass measurements | [10.5281/zenodo.20543261](https://doi.org/10.5281/zenodo.20543261) |
+| Model — trained weights | [10.5281/zenodo.20624494](https://doi.org/10.5281/zenodo.20624494) |
+
+The dataset holds three self-contained parts: the training data (9,481 images of
+3,142 weighed specimens, from EntoScan and Biodiscover), the *Drosophila* experiment
+(1,913 individuals), and the spider experiment (1,499 individuals). Each has its own
+`metadata.csv` and `images/` directory.
 
 ---
 
@@ -35,7 +46,11 @@ This quantity is dimensionless up to units: under isometric scaling (*M* ∝ *L*
 
 $$\hat{M} = \left(\widehat{\text{BF}} \times L\right)^3$$
 
-The CNN backbone is EfficientNet v2-s with a single regression head (dropout 0.6 → linear → scalar). Training uses MSE loss on BF values, with data augmentation including random rotations, flips, colour jitter, Gaussian noise, elastic deformation, and a custom random-downscale transform that rescales the target by the cube of the scale factor to keep BF consistent. At inference, 8-view test-time augmentation (4 rotations × 2 flips, median-aggregated) is used.
+The CNN backbone is EfficientNet v2-s with a single regression head (dropout 0.6 → linear → scalar). Training uses MSE loss on BF values, with augmentation by random 90° rotations, horizontal flips, colour jitter, a random choice of blur or sharpening, and a random-downscale transform.
+
+The downscale transform rescales the target **linearly** in the scale factor *s*, not by its cube. The augmentation pastes the image, shrunk by *s*, onto a canvas of unchanged size, so *L* stays fixed while the specimen's mass under isometry becomes *s*³*M*; substituting into the definition above gives BF′ = (*s*³*M*)^(1/3)/*L* = *s*·BF. The cube root in BF already absorbs the cubic mass–length relationship.
+
+Inference applies no augmentation. Test-time augmentation is available behind `--tta` but is off by default: it is worth about 1% of MAE, within noise, for eight times the compute.
 
 ---
 
@@ -45,10 +60,10 @@ The CNN backbone is EfficientNet v2-s with a single regression head (dropout 0.6
 01_biomass_model/          Core model — corresponds to Section 2.3 of the paper
   01-preprocess.py           Segment images, compute L and BF for each specimen
   02-train.py                Train EfficientNet v2-s to predict BF
-  03-predict.py              Run inference with 8-view TTA, recover M from BF̂
+  03-predict.py              Run inference, recover M from BF̂ (--tta optional)
   models.py                  Model architecture definition
   split.py                   Specimen-level train / val / test split
-  metadata.csv               Raw specimen metadata (~9,400 records)
+  metadata.csv               Raw specimen metadata (9,481 records)
   metadata_enriched.csv      Metadata with computed L and BF columns
   predictions.csv            Model predictions on the test set
 
@@ -63,7 +78,7 @@ tools/                     Standalone utilities
   segment-images.py          Batch segmentation using FlatBug
   add-new-metadata.py        Append new specimen records
   data-selection.py          Dataset filtering helpers
-  bf-sorting-images.py       Sort images by predicted BF for QC
+  bf-sortingi-images.py      Sort images by predicted BF for QC
 ```
 
 The numbered prefix on `01_biomass_model` and `02_experiments` loosely mirrors the paper's Methods section order. Each experiment sub-directory under `02_experiments/` is self-contained and mirrors the case-study results reported in the paper.
