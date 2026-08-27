@@ -259,26 +259,30 @@ is a trap.
 
 ## 4. Analysis / reproducibility
 
-### 4a. The ANOVA behind Figure 3b is not in the repository
+### 4a. The ANOVA behind Figure 3b — RESOLVED
 
 `02_methods.tex` lines 304–309 describe a Type III ANOVA with an `emmeans`
 post-hoc, and Fig 3b's `***`/`ns` annotations depend on it.
 
-Searched exhaustively: no `Anova()`, `aov()`, `emmeans`, `TukeyHSD` or
-`contr.sum` appears in any commit reachable from any ref, in any file type, nor
-in any untracked file. `analysis-01.Rmd` is a Figure 3a script and never touches
-the drosophila data; the drosophila `analysis.Rmd` fits no model at all. So the
-published annotations were produced outside this repository.
+**RESOLVED.** Melika committed it on 2026-08-27: `ea64ddc` adds
+`02_experiments/2025-12-15_drosophila_biomass/analysis-anova.Rmd`, and `6e5b39c`
+adds `02_experiments/2026-01-20_spiders/spider_analysis.Rmd`. Merged into this
+branch.
 
-**Status: awaiting Melika's code / reanalysis. Do not write a replacement.**
+Her analysis uses `contr.sum` contrasts, `lm(log(DRYMASS_MG_PRED) ~ sex * species *
+temp)`, `car::Anova(type = 3)` and `emmeans(~ temp | species * sex)`. Run against the
+current predictions it reproduces the ten published annotations and gives
+`species:temp` F(4, 1893) = 108.5. The reconstruction written here while waiting
+matched it to every digit, including the contrast choice, and has been deleted as
+redundant.
 
-For reference only — a reconstruction from the Methods text reproduced all ten
-published annotations (`***` for four species in both sexes, `ns` for
-*D. virilis* in both) on the current predictions, with `species:temp`
-F(4, 1893) = 108.5. It is deliberately **not** committed, because the F values
-depend on a contrast choice (`contr.sum`, without which `Anova(type = 3)` tests
-main effects against an arbitrary reference level) that may not match hers.
-Note `car` is not installed in this environment and would need adding.
+Two practical notes:
+
+- `analysis-anova.Rmd` reads `drosophila_predictions.csv`, which is not the name the
+  inference step writes (`predictions.csv`). A copy was made locally so the script
+  runs; either the script or the pipeline should be changed so it works from a clean
+  checkout.
+- `car` is not installed by default in this environment and has to be added.
 
 ### 4b. Run-to-run seed variance is still unmeasured
 
