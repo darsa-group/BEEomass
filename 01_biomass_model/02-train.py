@@ -16,7 +16,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
-from  torchvision.transforms.v2 import GaussianNoise, ElasticTransform
 import torchvision.transforms.functional as F
 from models import build_efficientnet
 from datetime import datetime
@@ -34,10 +33,14 @@ OUT_DIR = Path(f"01_runs/regression_effnet{EFFNET_VARIANT}/{datetime.now().strft
 
 # Training hyperparams
 SEED = 42
-BATCH_SIZE = 32
-NUM_WORKERS = 4
+# Raised from 32: the GPU was ~92% busy but only 5.8 of 16.4 GB in use, and the
+# dataloader has ~2.5x headroom, so larger batches convert idle memory into speed.
+BATCH_SIZE = 64
+NUM_WORKERS = 8   # dataloader had headroom at 4; more keeps the larger batch fed
 NUM_EPOCHS = 500
-LR = 1e-4
+# Scaled with the batch increase. AdamW is largely invariant to gradient scale, so
+# sqrt scaling (not the SGD linear rule) is the usual choice: 1e-4 * sqrt(64/32).
+LR = 1.4e-4
 WEIGHT_DECAY = 1e-5
 MOMENTUM = 0.9
 STEP_LR_STEP = 100
@@ -49,11 +52,18 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD  = (0.229, 0.224, 0.225)
 
 # Label smoothing multiplicative range for training (apply per-sample)
-LABEL_SMOOTH_MIN = 0.9
-LABEL_SMOOTH_MAX = 1.1
+LABEL_SMOOTH_MIN = 0.8
+LABEL_SMOOTH_MAX = 1.2
 #how much the images can be downscaled during augmentation. this is a special
 # augmentation that also modifies the target
-DOWNSCALING_MIN = 0.9
+DOWNSCALING_MIN = 0.5
+
+# Checkpoint cadence, and the window of the centred rolling median used to pick one.
+CHECKPOINT_EVERY = 50
+SELECTION_WINDOW = 11
+
+# Per-batch OpenCV debug display; off by default, see --debug-tiles.
+DEBUG_TILES = False
 # Device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -122,7 +132,9 @@ class RandomDownscale:
     return both image and scale factor.
     """
 
-    def __init__(self, min_scale=DOWNSCALING_MIN, max_scale=1.0):
+    def __init__(self, min_scale=None, max_scale=1.0):
+        # Read the global at call time so --downscale-min can override it.
+        min_scale = DOWNSCALING_MIN if min_scale is None else min_scale
         assert 0 < min_scale <= max_scale <= 1.0
         self.min_scale = min_scale
         self.max_scale = max_scale
@@ -202,7 +214,10 @@ class ImageRegDataset(Dataset):
         if self.transform is not None:
             img = self.transform(img)
 
-        target = float(row["BF_cbrMG_MM"]) * scale ** 3
+        # BF = M^(1/3)/L, so a simulated shrink by `scale` gives (scale^3 M)^(1/3)/L = scale * BF.
+        # NOT scale**3: BF is already a cube root, so cubing applies the exponent twice.
+        # This deviates from Eq (6) of the manuscript, which is incorrect.
+        target = float(row["BF_cbrMG_MM"]) * scale
         # print(float(row["BF_cbrMG_MM"]), scale, target)
         return img, torch.tensor(target, dtype=torch.float32)
 
@@ -211,8 +226,8 @@ class ImageRegDataset(Dataset):
 def random_blur_or_sharpness():
     # Randomly apply GaussianBlur or Sharpness adjustment
     aug = random.choice([
-        T.GaussianBlur(kernel_size=random.choice([3, 7]), sigma=(0.1, 2.0)),
-        T.RandomAdjustSharpness(sharpness_factor=random.uniform(0.5, 1.0), p=1.0)
+        T.GaussianBlur(kernel_size=random.choice([3, 9]), sigma=(0.1, 4.0)),
+        T.RandomAdjustSharpness(sharpness_factor=random.uniform(0.5, 2.0), p=1.0)
     ])
     return aug
 
@@ -222,34 +237,10 @@ def random_quadrant_rotation(img):
     return F.rotate(img, angle, fill=(255, 255, 255))  # white background
 
 
-class GaussianNoisePIL:
-    """
-    Apply additive Gaussian noise to a PIL RGB image.
-    Noise is applied in [0, 255] space.
-    """
+def apply_random_blur_or_sharpness(img):
+    """Module-level wrapper: a local lambda cannot be pickled for dataloader workers."""
+    return random_blur_or_sharpness()(img)
 
-    def __init__(self, sigma=5.0, p=0.5):
-        """
-        sigma: standard deviation in pixel values (0–255 scale)
-        p: probability of applying the noise
-        """
-        self.sigma = sigma
-        self.p = p
-
-    def __call__(self, img: Image.Image) -> Image.Image:
-        if random.random() > self.p:
-            return img
-
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-
-        arr = np.asarray(img).astype(np.float32)
-
-        noise = np.random.normal(0.0, self.sigma, arr.shape)
-        arr = arr + noise
-
-        arr = np.clip(arr, 0, 255).astype(np.uint8)
-        return Image.fromarray(arr, mode="RGB")
 
 def get_transforms(split: str):
     if split == "train":
@@ -257,23 +248,17 @@ def get_transforms(split: str):
 
             T.RandomHorizontalFlip(p=0.5),
 
-            T.Lambda(lambda img: random_quadrant_rotation(img)),
+            T.Lambda(random_quadrant_rotation),
             # Color jitter (brightness, contrast, saturation, hue)
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
             # Gaussian blur (kernel size chosen relative to image size)
 
-            T.Lambda(lambda img: random_blur_or_sharpness()(img)),
-            GaussianNoisePIL(sigma=7.0, p=.2),
-            T.RandomApply(
-                [ElasticTransform(alpha=50, fill=255)],
-                p=0.2
-            ),
+            T.Lambda(apply_random_blur_or_sharpness),
 
             T.ToTensor(),
             # T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
             # Clamp01(),
             # T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-            # GaussianNoise(sigma=0.01),
             # Clamp01(),
             # T.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ])
@@ -299,7 +284,10 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, labe
     targets_all = []
 
     for images, targets in dataloader:
-        tile_images_cv2(images, cols=8, pad=2, to_bgr=True, resize_to=(128, 128), window_name="train batch", show=True)
+        if DEBUG_TILES:
+            # Costs ~24 ms/batch (~13% of an epoch at batch 32) - opt in only.
+            tile_images_cv2(images, cols=8, pad=2, to_bgr=True, resize_to=(128, 128),
+                            window_name="train batch", show=True)
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True).unsqueeze(1)  # shape (B,1)
 
@@ -513,6 +501,34 @@ def tile_images_cv2(
     return canvas_disp
 
 
+def select_checkpoint(out_dir: Path, val_losses, window: int = 11, every: int = 50):
+    """Pick a checkpoint by the smoothed validation loss rather than its raw minimum.
+
+    Returns (epoch, path) and writes `selected_model.pt`. Because checkpoints are only
+    written every `every` epochs, the nearest saved epoch to the smoothed argmin is used;
+    the offset is reported so it is never silent.
+    """
+    import shutil
+    s = pd.Series(val_losses)
+    if len(s) < 2:
+        return None, None
+    smooth = s.rolling(window, center=True, min_periods=1).median()
+    target = int(smooth.idxmin()) + 1                      # epochs are 1-based
+    saved = sorted(int(p.stem.replace("checkpoint_epoch", ""))
+                   for p in out_dir.glob("checkpoint_epoch*.pt"))
+    if not saved:
+        return target, None
+    nearest = min(saved, key=lambda e: abs(e - target))
+    src = out_dir / f"checkpoint_epoch{nearest}.pt"
+    data = torch.load(src, map_location="cpu")
+    state = data["model_state_dict"] if isinstance(data, dict) and "model_state_dict" in data else data
+    torch.save(state, out_dir / "selected_model.pt")
+    if nearest != target:
+        print(f"  smoothed argmin at epoch {target}; nearest saved checkpoint is {nearest} "
+              f"(offset {nearest - target:+d}). Lower --checkpoint-every to reduce this.", flush=True)
+    return nearest, out_dir / "selected_model.pt"
+
+
 def run_training(
     csv_path: Path,
     root_img_dir: Path,
@@ -573,7 +589,7 @@ def run_training(
 
         # checkpoint
         ckpt_path = out_dir / f"checkpoint_epoch{epoch}.pt"
-        if epoch % 50 ==0:
+        if epoch % CHECKPOINT_EVERY == 0:
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
@@ -600,6 +616,19 @@ def run_training(
         }
         row_df = pd.DataFrame([row])
         row_df.to_csv(results_csv_path, mode="a", header=False, index=False)
+
+    # -------- model selection --------
+    # The per-epoch validation loss is noise-dominated once the curve plateaus: its
+    # epoch-to-epoch SD is comparable to the entire remaining drift, so argmin over
+    # 500 epochs picks whichever epoch happened to land in a noise dip. Selecting on
+    # a centred rolling median of the validation loss instead. This cannot be done
+    # online (it needs the future), so it runs here, against the periodic checkpoints.
+    sel_epoch, sel_path = select_checkpoint(out_dir, history["val_loss"],
+                                            window=SELECTION_WINDOW,
+                                            every=CHECKPOINT_EVERY)
+    if sel_path is not None:
+        print(f"Selected checkpoint: epoch {sel_epoch} -> {sel_path.name} "
+              f"(smoothed argmin, window {SELECTION_WINDOW})", flush=True)
 
     # final test evaluation
     test_loss, test_r2, test_mae = validate(model, test_loader, criterion, device, epoch="test")
@@ -633,6 +662,37 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=NUM_EPOCHS)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=LR)
+    parser.add_argument("--num-workers", type=int, default=NUM_WORKERS)
+    parser.add_argument("--debug-tiles", action="store_true",
+                        help="Show each training batch in an OpenCV window (slow: ~24 ms/batch)")
+    parser.add_argument("--downscale-min", type=float, default=DOWNSCALING_MIN,
+                        help="Lower bound of the scale-augmentation factor (1.0 disables it)")
+    parser.add_argument("--label-smooth-min", type=float, default=LABEL_SMOOTH_MIN,
+                        help="Multiplicative target jitter lower bound (set both to 1.0 to disable)")
+    parser.add_argument("--label-smooth-max", type=float, default=LABEL_SMOOTH_MAX,
+                        help="Multiplicative target jitter upper bound")
+    parser.add_argument("--seed", type=int, default=SEED,
+                        help="Random seed; vary it to measure run-to-run variance")
+    parser.add_argument("--checkpoint-every", type=int, default=CHECKPOINT_EVERY,
+                        help="Epoch interval at which checkpoints are written")
+    parser.add_argument("--selection-window", type=int, default=SELECTION_WINDOW,
+                        help="Centred rolling-median window used to select a checkpoint (1 = raw argmin)")
     args = parser.parse_args()
 
-    run_training(csv_path=Path(args.csv), root_img_dir=Path(args.root), out_dir=Path(args.out), batch_size=args.batch_size, num_epochs=args.epochs, lr=args.lr)
+    # Override module-level constants so the augmentation is sweepable without edits.
+    DEBUG_TILES = args.debug_tiles
+    NUM_WORKERS = args.num_workers
+    DOWNSCALING_MIN = args.downscale_min
+    LABEL_SMOOTH_MIN = args.label_smooth_min
+    LABEL_SMOOTH_MAX = args.label_smooth_max
+    SEED = args.seed
+    CHECKPOINT_EVERY = args.checkpoint_every
+    SELECTION_WINDOW = args.selection_window
+    print(f"seed={SEED} augmentation: downscale_min={DOWNSCALING_MIN} "
+          f"label_smooth=({LABEL_SMOOTH_MIN}, {LABEL_SMOOTH_MAX}) "
+          f"gaussian_noise=off elastic=off", flush=True)
+
+    run_training(csv_path=Path(args.csv), root_img_dir=Path(args.root), out_dir=Path(args.out),
+                 batch_size=args.batch_size, num_epochs=args.epochs, lr=args.lr,
+                 num_workers=args.num_workers)  # passed explicitly: the default arg is
+                 # bound at definition time, so overriding the global would be ignored
