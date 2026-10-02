@@ -516,7 +516,7 @@ def tile_images_cv2(
 
 
 def select_checkpoint(out_dir: Path, val_losses, window: int = 11, every: int = 50):
-    """Pick a checkpoint by the smoothed validation loss rather than its raw minimum.
+    """Pick a checkpoint by a smoothed validation metric (lower is better) rather than its raw minimum.
 
     Returns (epoch, path) and writes `selected_model.pt`. Because checkpoints are only
     written every `every` epochs, the nearest saved epoch to the smoothed argmin is used;
@@ -588,7 +588,7 @@ def run_training(
                                        "val_loss", "val_r2", "val_mae", "val_cov95", "val_sigma"])
     results_df.to_csv(results_csv_path, index=False)
 
-    history = {"train_loss": [], "val_loss": []}
+    history = {"train_loss": [], "val_loss": [], "val_mae": []}
 
     for epoch in range(1, num_epochs + 1):
 
@@ -602,6 +602,7 @@ def run_training(
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
+        history["val_mae"].append(val_mae)
 
         # checkpoint
         ckpt_path = out_dir / f"checkpoint_epoch{epoch}.pt"
@@ -643,12 +644,15 @@ def run_training(
     # 500 epochs picks whichever epoch happened to land in a noise dip. Selecting on
     # a centred rolling median of the validation loss instead. This cannot be done
     # online (it needs the future), so it runs here, against the periodic checkpoints.
-    sel_epoch, sel_path = select_checkpoint(out_dir, history["val_loss"],
+    # For the Gaussian head, select on val MAE, not val NLL: sigma shrinks as the model
+    # fits the training set, so the NLL favours early, less accurate epochs. Their
+    # overconfidence is corrected afterwards by 04-calibrate.py.
+    sel_epoch, sel_path = select_checkpoint(out_dir, history["val_mae"],
                                             window=SELECTION_WINDOW,
                                             every=CHECKPOINT_EVERY)
     if sel_path is not None:
         print(f"Selected checkpoint: epoch {sel_epoch} -> {sel_path.name} "
-              f"(smoothed argmin, window {SELECTION_WINDOW})", flush=True)
+              f"(smoothed val-MAE argmin, window {SELECTION_WINDOW})", flush=True)
 
     # final test evaluation
     test_loss, test_r2, test_mae, test_cov95, test_sigma = validate(model, test_loader, gaussian_nll, device, epoch="test")

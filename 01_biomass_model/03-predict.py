@@ -3,7 +3,9 @@ Inference script: load a .pt model (EfficientNet with a Gaussian head on log BF)
 all images listed in a metadata CSV, and save the predictions as `predictions.csv`.
 
 Columns added:
-- `LOGBF_MU`, `LOGBF_SIGMA`: the predicted distribution, log BF ~ N(mu, sigma^2)
+- `LOGBF_MU`, `LOGBF_SIGMA`: the predicted distribution, log BF ~ N(mu, sigma^2). sigma is
+  multiplied by the calibration factor k from `calibration.json` next to the weights
+  (written by 04-calibrate.py), unless --sigma-scale is given.
 - `BF_PRED`: exp(mu), the predicted median BF
 - if the CSV has `ROI_SIZE_MM` (L): log M = 3 (log BF + log L) ~ N(3 (mu + log L), (3 sigma)^2), so
   mass is log-normal. `MASS_PRED_MG` is its median, `MASS_MEAN_MG` its mean
@@ -21,6 +23,7 @@ Usage example:
 """
 
 import argparse
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -108,7 +111,7 @@ def median_even(x: torch.Tensor, dim: int) -> torch.Tensor:
     hi = xs.select(dim, n//2)
     return 0.5 * (lo + hi)
 
-def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, root_img_dir: Path = ".", tta: bool = False):
+def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, root_img_dir: Path = ".", tta: bool = False, sigma_scale: float = 1.0):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(csv_path)
@@ -149,7 +152,7 @@ def run_inference(csv_path: Path, weights_path: Path, out_dir: Path, batch_size:
                 preds[int(orig_idx)] = vals_np[i]
 
     mu = preds[:, 0]
-    sigma = np.exp(np.clip(preds[:, 1], LOG_SIGMA_MIN, LOG_SIGMA_MAX))
+    sigma = sigma_scale * np.exp(np.clip(preds[:, 1], LOG_SIGMA_MIN, LOG_SIGMA_MAX))
 
     df_out = df.copy()
     df_out["LOGBF_MU"] = mu
@@ -189,12 +192,25 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=16)
     parser.add_argument("--tta", action="store_true",
                         help="enable 8-view test-time augmentation (off by default)")
+    parser.add_argument("--sigma-scale", type=float, default=None,
+                        help="factor applied to sigma (default: k from calibration.json beside the weights, else 1)")
     args = parser.parse_args()
 
     # run_inference reads this at call time, so it must be set before the call.
     EFFNET_VARIANT = args.variant
 
     print(f"weights: {args.weights}")
+    sigma_scale = args.sigma_scale
+    calib_path = args.weights.with_name("calibration.json")
+    if sigma_scale is None and calib_path.exists():
+        sigma_scale = json.loads(calib_path.read_text())["sigma_scale"]
+        print(f"sigma scale: {sigma_scale:.3f} (from {calib_path})")
+    elif sigma_scale is None:
+        sigma_scale = 1.0
+        print("sigma scale: 1.0 (no calibration.json beside the weights: intervals are uncalibrated)")
+    else:
+        print(f"sigma scale: {sigma_scale:.3f} (from --sigma-scale)")
+
     run_inference(csv_path=args.csv, weights_path=args.weights,
                   out_dir=args.out, batch_size=args.batch_size, num_workers=args.num_workers,
-                  tta=args.tta)
+                  tta=args.tta, sigma_scale=sigma_scale)
