@@ -7,10 +7,11 @@ import torch
 
 # -------------------- MODEL --------------------
 
-def build_efficientnet(variant: str = "b0", pretrained: bool = True):
+def build_efficientnet(variant: str = "b0", pretrained: bool = True, n_outputs: int = 1):
     """
     variant: one of {"b0","b1","b2","b3","b4","b5","b6","b7","v2_s","v2_m","v2_l"}
     pretrained: uses ImageNet weights if available (torchvision)
+    n_outputs: 1 for a point regression, 2 for a Gaussian (mean, log SD)
     """
     v = variant.lower()
 
@@ -43,19 +44,19 @@ def build_efficientnet(variant: str = "b0", pretrained: bool = True):
     else:
         raise Exception(f"Unsupported EfficientNet variant: {variant}")
 
-    # Replace classifier head with a single regression output
+    # Replace classifier head with a regression output of n_outputs values
     # torchvision EfficientNet has model.classifier = Sequential(Dropout, Linear)
     if isinstance(model.classifier, nn.Sequential):
         in_features = model.classifier[-1].in_features
         model.classifier = nn.Sequential(
             nn.Dropout(p=0.6),  # ← stronger dropout
-            nn.Linear(in_features, 1)
+            nn.Linear(in_features, n_outputs)
         )
     else:
         in_features = model.classifier.in_features
         model.classifier = nn.Sequential(
             nn.Dropout(p=0.6),
-            nn.Linear(in_features, 1)
+            nn.Linear(in_features, n_outputs)
         )
     return model
 

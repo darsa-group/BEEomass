@@ -29,7 +29,7 @@ METADATA_CSV = Path("metadata_enriched.csv")      # <- change me
 # RESNET_ARCH = "50"
 EFFNET_VARIANT = "v2_s"
 
-OUT_DIR = Path(f"01_runs/regression_effnet{EFFNET_VARIANT}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
+OUT_DIR = Path(f"01_runs/gaussian_logbf_effnet{EFFNET_VARIANT}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
 
 # Training hyperparams
 SEED = 42
@@ -51,9 +51,16 @@ IMG_SIZE = 224
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD  = (0.229, 0.224, 0.225)
 
-# Label smoothing multiplicative range for training (apply per-sample)
-LABEL_SMOOTH_MIN = 0.8
-LABEL_SMOOTH_MAX = 1.2
+# Distributional head: the model predicts log BF ~ N(mu, sigma^2) as (mu, log sigma).
+# No target jitter: under a likelihood loss, sigma would learn the injected noise.
+# The first NLL_WARMUP_EPOCHS fit mu alone with MSE, so sigma does not inflate to
+# absorb the error of an untrained mean. Validation always reports the NLL.
+NLL_WARMUP_EPOCHS = 5
+# Bounds on log sigma, to keep exp(-log sigma) finite early in training.
+LOG_SIGMA_MIN = -7.0
+LOG_SIGMA_MAX = 2.0
+# z for the central 95% interval, used for the coverage diagnostic.
+Z95 = 1.959964
 #how much the images can be downscaled during augmentation. this is a special
 # augmentation that also modifies the target
 DOWNSCALING_MIN = 0.5
@@ -91,6 +98,34 @@ def compute_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 def compute_mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.mean(np.abs(y_true - y_pred)))
+
+def split_output(out: torch.Tensor):
+    """(B,2) head output -> mu (B,1), log sigma (B,1), with log sigma clamped."""
+    return out[:, :1], out[:, 1:].clamp(LOG_SIGMA_MIN, LOG_SIGMA_MAX)
+
+def gaussian_nll(out: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Gaussian negative log-likelihood of log BF, without the constant 0.5*log(2*pi)."""
+    mu, log_sigma = split_output(out)
+    return (log_sigma + 0.5 * ((y - mu) * torch.exp(-log_sigma)) ** 2).mean()
+
+def mu_mse(out: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Warm-up loss: MSE on the mean only; the log sigma output gets no gradient."""
+    return ((out[:, :1] - y) ** 2).mean()
+
+def summarise_predictions(out_all: np.ndarray, y_all: np.ndarray):
+    """Metrics from (N,2) outputs and (N,) log BF targets.
+
+    R2 and MAE are on the BF scale, with exp(mu) (the predicted median BF) as the
+    point estimate, so they stay comparable with the point-regression runs.
+    cov95 is the share of targets inside mu +- 1.96 sigma (0.95 if calibrated).
+    """
+    if out_all.size == 0:
+        return 0.0, 0.0, 0.0, 0.0
+    mu = out_all[:, 0]
+    sigma = np.exp(np.clip(out_all[:, 1], LOG_SIGMA_MIN, LOG_SIGMA_MAX))
+    bf_true, bf_pred = np.exp(y_all), np.exp(mu)
+    cov95 = float(np.mean(np.abs(y_all - mu) <= Z95 * sigma))
+    return compute_r2(bf_true, bf_pred), compute_mae(bf_true, bf_pred), cov95, float(np.mean(sigma))
 
 # -------------------- DATASET --------------------
 
@@ -164,7 +199,7 @@ class ImageRegDataset(Dataset):
     """Dataset that accepts a pandas DataFrame with at least these columns:
     - `IMAGE_FILENAME`: image filename (can be relative)
     - `DATASET`: subdirectory name under `root_dir` where the image lives
-    - `BF_cbrMG_MM`: regression target (float)
+    - `BF_cbrMG_MM`: biomass factor (float, > 0); the target is its log
     - `SPLIT`: 'train' | 'val' | 'test'
     Images are resolved as: root_dir / DATASET / IMAGE_FILENAME (unless IMAGE_FILENAME is absolute).
     """
@@ -217,8 +252,8 @@ class ImageRegDataset(Dataset):
         # BF = M^(1/3)/L, so a simulated shrink by `scale` gives (scale^3 M)^(1/3)/L = scale * BF.
         # NOT scale**3: BF is already a cube root, so cubing applies the exponent twice.
         # This deviates from Eq (6) of the manuscript, which is incorrect.
-        target = float(row["BF_cbrMG_MM"]) * scale
-        # print(float(row["BF_cbrMG_MM"]), scale, target)
+        # On the log scale the shrink is additive: log(scale * BF) = log BF + log scale.
+        target = float(np.log(float(row["BF_cbrMG_MM"]) * scale))
         return img, torch.tensor(target, dtype=torch.float32)
 
 # -------------------- TRANSFORMS --------------------
@@ -274,7 +309,7 @@ def get_transforms(split: str):
 
 # -------------------- TRAIN / VAL LOOP --------------------
 
-def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, label_smooth_min, label_smooth_max):
+def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch):
     model.train()
     running_loss = 0.0
     n_samples = 0
@@ -289,26 +324,18 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, labe
             tile_images_cv2(images, cols=8, pad=2, to_bgr=True, resize_to=(128, 128),
                             window_name="train batch", show=True)
         images = images.to(device, non_blocking=True)
-        targets = targets.to(device, non_blocking=True).unsqueeze(1)  # shape (B,1)
+        targets = targets.to(device, non_blocking=True).unsqueeze(1)  # shape (B,1), log BF
 
-        # Apply multiplicative label smoothing / jitter per-sample (only for loss)
-        with torch.no_grad():
-            multipliers = torch.empty((targets.size(0), 1), device=targets.device).uniform_(label_smooth_min, label_smooth_max)
-            smooth_targets = targets * multipliers
+        preds = model(images)  # shape (B,2): mu, log sigma
 
-        preds = model(images)  # shape (B,1)
-
-        loss = criterion(preds, smooth_targets)
+        loss = criterion(preds, targets)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        # detach preds and targets for metrics (use true targets, not smoothed)
-        preds_cpu = preds.detach().cpu().numpy().reshape(-1)
-        targets_cpu = targets.detach().cpu().numpy().reshape(-1)
-        preds_all.append(preds_cpu)
-        targets_all.append(targets_cpu)
+        preds_all.append(preds.detach().cpu().numpy())
+        targets_all.append(targets.detach().cpu().numpy().reshape(-1))
 
         batch_size = images.size(0)
         running_loss += loss.item() * batch_size
@@ -316,19 +343,13 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, labe
 
     epoch_loss = running_loss / max(1, n_samples)
 
-    # compute R^2 and MAE over collected arrays
-    preds_all = np.concatenate(preds_all, axis=0) if len(preds_all) > 0 else np.array([])
+    preds_all = np.concatenate(preds_all, axis=0) if len(preds_all) > 0 else np.empty((0, 2))
     targets_all = np.concatenate(targets_all, axis=0) if len(targets_all) > 0 else np.array([])
+    train_r2, train_mae, train_cov95, train_sigma = summarise_predictions(preds_all, targets_all)
 
-    if preds_all.size > 0:
-        train_r2 = compute_r2(targets_all, preds_all)
-        train_mae = compute_mae(targets_all, preds_all)
-    else:
-        train_r2 = 0.0
-        train_mae = 0.0
-
-    print(f"Epoch {epoch} train loss: {epoch_loss:.6f}  R2: {train_r2:.4f}  MAE: {train_mae:.6f}")
-    return epoch_loss, train_r2, train_mae
+    print(f"Epoch {epoch} train loss: {epoch_loss:.6f}  R2: {train_r2:.4f}  MAE: {train_mae:.6f}  "
+          f"cov95: {train_cov95:.3f}  sigma: {train_sigma:.4f}")
+    return epoch_loss, train_r2, train_mae, train_cov95, train_sigma
 
 @torch.no_grad()
 def validate(model, dataloader, criterion, device, epoch):
@@ -346,10 +367,8 @@ def validate(model, dataloader, criterion, device, epoch):
         preds = model(images)
         loss = criterion(preds, targets)
 
-        preds_cpu = preds.detach().cpu().numpy().reshape(-1)
-        targets_cpu = targets.detach().cpu().numpy().reshape(-1)
-        preds_all.append(preds_cpu)
-        targets_all.append(targets_cpu)
+        preds_all.append(preds.detach().cpu().numpy())
+        targets_all.append(targets.detach().cpu().numpy().reshape(-1))
 
         batch_size = images.size(0)
         running_loss += loss.item() * batch_size
@@ -357,18 +376,13 @@ def validate(model, dataloader, criterion, device, epoch):
 
     epoch_loss = running_loss / max(1, n_samples)
 
-    preds_all = np.concatenate(preds_all, axis=0) if len(preds_all) > 0 else np.array([])
+    preds_all = np.concatenate(preds_all, axis=0) if len(preds_all) > 0 else np.empty((0, 2))
     targets_all = np.concatenate(targets_all, axis=0) if len(targets_all) > 0 else np.array([])
+    val_r2, val_mae, val_cov95, val_sigma = summarise_predictions(preds_all, targets_all)
 
-    if preds_all.size > 0:
-        val_r2 = compute_r2(targets_all, preds_all)
-        val_mae = compute_mae(targets_all, preds_all)
-    else:
-        val_r2 = 0.0
-        val_mae = 0.0
-
-    print(f"Epoch {epoch} val loss: {epoch_loss:.6f}  R2: {val_r2:.4f}  MAE: {val_mae:.6f}")
-    return epoch_loss, val_r2, val_mae
+    print(f"Epoch {epoch} val loss: {epoch_loss:.6f}  R2: {val_r2:.4f}  MAE: {val_mae:.6f}  "
+          f"cov95: {val_cov95:.3f}  sigma: {val_sigma:.4f}")
+    return epoch_loss, val_r2, val_mae, val_cov95, val_sigma
 
 # -------------------- MAIN TRAIN FUNCTION --------------------
 
@@ -557,9 +571,8 @@ def run_training(
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=PIN_MEMORY, persistent_workers=PERSISTENT_WORKERS)
 
     # Model, optimizer, loss
-    model = build_efficientnet(variant = EFFNET_VARIANT, pretrained=True).to(device)
+    model = build_efficientnet(variant = EFFNET_VARIANT, pretrained=True, n_outputs=2).to(device)
 
-    criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=STEP_LR_STEP, gamma=STEP_LR_GAMMA)
 
@@ -568,9 +581,11 @@ def run_training(
     # prepare epoch results CSV
     results_csv_path = out_dir / "epoch_results.csv"
     # write header
+    # train_loss is the warm-up MSE for the first NLL_WARMUP_EPOCHS, the NLL after;
+    # val_loss is always the NLL, so checkpoint selection compares like with like.
     results_df = pd.DataFrame(columns=["epoch",
-                                       "train_loss", "train_r2", "train_mae",
-                                       "val_loss", "val_r2", "val_mae"])
+                                       "train_loss", "train_r2", "train_mae", "train_cov95", "train_sigma",
+                                       "val_loss", "val_r2", "val_mae", "val_cov95", "val_sigma"])
     results_df.to_csv(results_csv_path, index=False)
 
     history = {"train_loss": [], "val_loss": []}
@@ -579,9 +594,10 @@ def run_training(
 
         # images: [B,3,H,W] float
 
-
-        train_loss, train_r2, train_mae = train_one_epoch(model, train_loader, optimizer, criterion, device, epoch, LABEL_SMOOTH_MIN, LABEL_SMOOTH_MAX)
-        val_loss, val_r2, val_mae = validate(model, val_loader, criterion, device, epoch)
+        train_criterion = mu_mse if epoch <= NLL_WARMUP_EPOCHS else gaussian_nll
+        train_loss, train_r2, train_mae, train_cov95, train_sigma = train_one_epoch(
+            model, train_loader, optimizer, train_criterion, device, epoch)
+        val_loss, val_r2, val_mae, val_cov95, val_sigma = validate(model, val_loader, gaussian_nll, device, epoch)
         scheduler.step()
 
         history["train_loss"].append(train_loss)
@@ -610,9 +626,13 @@ def run_training(
             "train_loss": train_loss,
             "train_r2": train_r2,
             "train_mae": train_mae,
+            "train_cov95": train_cov95,
+            "train_sigma": train_sigma,
             "val_loss": val_loss,
             "val_r2": val_r2,
             "val_mae": val_mae,
+            "val_cov95": val_cov95,
+            "val_sigma": val_sigma,
         }
         row_df = pd.DataFrame([row])
         row_df.to_csv(results_csv_path, mode="a", header=False, index=False)
@@ -631,8 +651,9 @@ def run_training(
               f"(smoothed argmin, window {SELECTION_WINDOW})", flush=True)
 
     # final test evaluation
-    test_loss, test_r2, test_mae = validate(model, test_loader, criterion, device, epoch="test")
-    print(f"Final test loss: {test_loss:.6f}  R2: {test_r2:.4f}  MAE: {test_mae:.6f}")
+    test_loss, test_r2, test_mae, test_cov95, test_sigma = validate(model, test_loader, gaussian_nll, device, epoch="test")
+    print(f"Final test loss: {test_loss:.6f}  R2: {test_r2:.4f}  MAE: {test_mae:.6f}  "
+          f"cov95: {test_cov95:.3f}  sigma: {test_sigma:.4f}")
 
     # save history (optional)
     hist_df = pd.DataFrame(history)
@@ -644,9 +665,13 @@ def run_training(
         "train_loss": np.nan,
         "train_r2": np.nan,
         "train_mae": np.nan,
+        "train_cov95": np.nan,
+        "train_sigma": np.nan,
         "val_loss": test_loss,
         "val_r2": test_r2,
         "val_mae": test_mae,
+        "val_cov95": test_cov95,
+        "val_sigma": test_sigma,
     }
     pd.DataFrame([final_row]).to_csv(results_csv_path, mode="a", header=False, index=False)
 
@@ -667,10 +692,8 @@ if __name__ == "__main__":
                         help="Show each training batch in an OpenCV window (slow: ~24 ms/batch)")
     parser.add_argument("--downscale-min", type=float, default=DOWNSCALING_MIN,
                         help="Lower bound of the scale-augmentation factor (1.0 disables it)")
-    parser.add_argument("--label-smooth-min", type=float, default=LABEL_SMOOTH_MIN,
-                        help="Multiplicative target jitter lower bound (set both to 1.0 to disable)")
-    parser.add_argument("--label-smooth-max", type=float, default=LABEL_SMOOTH_MAX,
-                        help="Multiplicative target jitter upper bound")
+    parser.add_argument("--nll-warmup", type=int, default=NLL_WARMUP_EPOCHS,
+                        help="Epochs of MSE on the mean before switching to the Gaussian NLL (0 = none)")
     parser.add_argument("--seed", type=int, default=SEED,
                         help="Random seed; vary it to measure run-to-run variance")
     parser.add_argument("--checkpoint-every", type=int, default=CHECKPOINT_EVERY,
@@ -683,14 +706,13 @@ if __name__ == "__main__":
     DEBUG_TILES = args.debug_tiles
     NUM_WORKERS = args.num_workers
     DOWNSCALING_MIN = args.downscale_min
-    LABEL_SMOOTH_MIN = args.label_smooth_min
-    LABEL_SMOOTH_MAX = args.label_smooth_max
+    NLL_WARMUP_EPOCHS = args.nll_warmup
     SEED = args.seed
     CHECKPOINT_EVERY = args.checkpoint_every
     SELECTION_WINDOW = args.selection_window
     print(f"seed={SEED} augmentation: downscale_min={DOWNSCALING_MIN} "
-          f"label_smooth=({LABEL_SMOOTH_MIN}, {LABEL_SMOOTH_MAX}) "
-          f"gaussian_noise=off elastic=off", flush=True)
+          f"label_smooth=off gaussian_noise=off elastic=off "
+          f"target=log BF ~ N(mu, sigma) nll_warmup={NLL_WARMUP_EPOCHS}", flush=True)
 
     run_training(csv_path=Path(args.csv), root_img_dir=Path(args.root), out_dir=Path(args.out),
                  batch_size=args.batch_size, num_epochs=args.epochs, lr=args.lr,
