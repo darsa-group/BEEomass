@@ -76,9 +76,10 @@ def run_model(model, df, batch_size, num_workers):
     return np.concatenate(out, axis=0)
 
 
-def gaussian_metrics(y, mu, sigma):
-    """y, mu, sigma on log BF. Accuracy on the BF scale, as in 02-train.py."""
-    bf, bf_pred = np.exp(y), np.exp(mu)
+def gaussian_metrics(y, mu, sigma, target="logbf"):
+    """y, mu, sigma on the log target. Accuracy on the BF scale for "logbf", on log mass
+    for "logmass", as in 02-train.py."""
+    bf, bf_pred = (np.exp(y), np.exp(mu)) if target == "logbf" else (y, mu)
     z = (y - mu) / sigma
     m = {
         "r2": float(1 - np.sum((bf - bf_pred) ** 2) / np.sum((bf - bf.mean()) ** 2)),
@@ -96,6 +97,8 @@ def main():
     ap.add_argument("--run", type=Path, required=True, help="Gaussian run directory")
     ap.add_argument("--csv", type=Path, default=Path("metadata_enriched.csv"))
     ap.add_argument("--variant", default="v2_s")
+    ap.add_argument("--target", choices=["logbf", "logmass"], default="logbf",
+                    help="what the run predicts (the --target it was trained with)")
     ap.add_argument("--selection-window", type=int, default=11)
     ap.add_argument("--baseline", type=Path, default=None,
                     help="optional point-model checkpoint (1-output head) to score on the same test images")
@@ -116,7 +119,8 @@ def main():
     preds, report = {}, {}
     for split, d in parts.items():
         out = run_model(model, d, args.batch_size, args.num_workers)
-        preds[split] = (np.log(d["BF_cbrMG_MM"].to_numpy(dtype=float)), out[:, 0],
+        col = "BF_cbrMG_MM" if args.target == "logbf" else "DRYMASS_MG"
+        preds[split] = (np.log(d[col].to_numpy(dtype=float)), out[:, 0],
                         np.exp(np.clip(out[:, 1], LOG_SIGMA_MIN, LOG_SIGMA_MAX)))
 
     y, mu, sigma = preds["val"]
@@ -126,9 +130,10 @@ def main():
 
     for split in ("val", "test"):
         y, mu, sigma = preds[split]
-        report[split] = {"raw": gaussian_metrics(y, mu, sigma), "calibrated": gaussian_metrics(y, mu, k * sigma)}
+        report[split] = {"raw": gaussian_metrics(y, mu, sigma, args.target),
+                         "calibrated": gaussian_metrics(y, mu, k * sigma, args.target)}
 
-    if args.baseline is not None:
+    if args.baseline is not None and args.target == "logbf":
         base = build_efficientnet(variant=args.variant, pretrained=False, n_outputs=1)
         base = load_weights_to_model(base, args.baseline, DEVICE).eval()
         bf = parts["test"]["BF_cbrMG_MM"].to_numpy(dtype=float)
@@ -147,7 +152,7 @@ def main():
         print(table)
 
     calib = {
-        "checkpoint": ckpt.name, "epoch": epoch, "smoothed_val_mae_argmin": target,
+        "target": args.target, "checkpoint": ckpt.name, "epoch": epoch, "smoothed_val_mae_argmin": target,
         "selection": f"rolling median of val_mae, window {args.selection_window}",
         "sigma_scale": k, "sigma_scale_cov95": k95,
         "baseline": str(args.baseline) if args.baseline else None,
@@ -161,7 +166,8 @@ def main():
     out = []
     for split, (y, mu, sigma) in preds.items():
         d = parts[split][["IMAGE_FILENAME", "INSECT_ID", "DATASET", "SPLIT", "BF_cbrMG_MM", "ROI_SIZE_MM", "DRYMASS_MG"]].copy()
-        d["LOGBF_MU"], d["LOGBF_SIGMA_RAW"], d["LOGBF_SIGMA"] = mu, sigma, k * sigma
+        name = "LOGBF" if args.target == "logbf" else "LOGMASS"
+        d[f"{name}_MU"], d[f"{name}_SIGMA_RAW"], d[f"{name}_SIGMA"] = mu, sigma, k * sigma
         out.append(d)
     pd.concat(out).to_csv(args.run / "val_test_predictions.csv", index=False)
     print(f"Wrote calibration.json, calibrated_model.pt and val_test_predictions.csv to {args.run}")

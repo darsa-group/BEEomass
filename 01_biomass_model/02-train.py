@@ -29,6 +29,11 @@ METADATA_CSV = Path("metadata_enriched.csv")      # <- change me
 # RESNET_ARCH = "50"
 EFFNET_VARIANT = "v2_s"
 
+# What the Gaussian head predicts: "logbf" (log biomass factor, the BEEomass model) or
+# "logmass" (log dry mass straight from the image; a reviewer-requested comparison).
+# The images are the same 224 px crops either way, so "logmass" gets no physical scale.
+TARGET = "logbf"
+
 OUT_DIR = Path(f"01_runs/gaussian_logbf_effnet{EFFNET_VARIANT}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
 
 # Training hyperparams
@@ -115,15 +120,17 @@ def mu_mse(out: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 def summarise_predictions(out_all: np.ndarray, y_all: np.ndarray):
     """Metrics from (N,2) outputs and (N,) log BF targets.
 
-    R2 and MAE are on the BF scale, with exp(mu) (the predicted median BF) as the
-    point estimate, so they stay comparable with the point-regression runs.
+    For TARGET "logbf", R2 and MAE are on the BF scale, with exp(mu) (the predicted median
+    BF) as the point estimate, so they stay comparable with the point-regression runs.
+    For "logmass" they are on log mass: on the mg scale the MAE (also the checkpoint
+    selection metric) would be driven by the few heaviest specimens.
     cov95 is the share of targets inside mu +- 1.96 sigma (0.95 if calibrated).
     """
     if out_all.size == 0:
         return 0.0, 0.0, 0.0, 0.0
     mu = out_all[:, 0]
     sigma = np.exp(np.clip(out_all[:, 1], LOG_SIGMA_MIN, LOG_SIGMA_MAX))
-    bf_true, bf_pred = np.exp(y_all), np.exp(mu)
+    bf_true, bf_pred = (np.exp(y_all), np.exp(mu)) if TARGET == "logbf" else (y_all, mu)
     cov95 = float(np.mean(np.abs(y_all - mu) <= Z95 * sigma))
     return compute_r2(bf_true, bf_pred), compute_mae(bf_true, bf_pred), cov95, float(np.mean(sigma))
 
@@ -209,12 +216,15 @@ class ImageRegDataset(Dataset):
         self.split = split
         self.root_dir = Path(root_dir) if root_dir is not None else None
         self.transform = transform
+        # Stored on the instance: dataloader workers re-import this module, so a global
+        # overridden from the CLI would read as its default inside them.
+        self.target = TARGET
 
         # Filter by split
         self.df = df[df["SPLIT"] == split][df["IS_VALID"] == True].reset_index(drop=True).copy()
 
         # Column checks
-        required_cols = {"IMAGE_FILENAME", "DATASET", "BF_cbrMG_MM"}
+        required_cols = {"IMAGE_FILENAME", "DATASET", "BF_cbrMG_MM", "DRYMASS_MG"}
 
         missing = required_cols - set(self.df.columns)
 
@@ -254,6 +264,10 @@ class ImageRegDataset(Dataset):
         # This deviates from Eq (6) of the manuscript, which is incorrect.
         # On the log scale the shrink is additive: log(scale * BF) = log BF + log scale.
         target = float(np.log(float(row["BF_cbrMG_MM"]) * scale))
+        if self.target == "logmass":
+            # Shrinking the specimen inside a fixed frame is a specimen s times smaller, i.e.
+            # s^3 times lighter under isometry: the same physics as the BF rule above.
+            target = float(np.log(float(row["DRYMASS_MG"])) + 3 * np.log(scale))
         return img, torch.tensor(target, dtype=torch.float32)
 
 # -------------------- TRANSFORMS --------------------
@@ -696,6 +710,8 @@ if __name__ == "__main__":
                         help="Show each training batch in an OpenCV window (slow: ~24 ms/batch)")
     parser.add_argument("--downscale-min", type=float, default=DOWNSCALING_MIN,
                         help="Lower bound of the scale-augmentation factor (1.0 disables it)")
+    parser.add_argument("--target", choices=["logbf", "logmass"], default=TARGET,
+                        help="predict log BF (default) or log dry mass directly from the image")
     parser.add_argument("--nll-warmup", type=int, default=NLL_WARMUP_EPOCHS,
                         help="Epochs of MSE on the mean before switching to the Gaussian NLL (0 = none)")
     parser.add_argument("--seed", type=int, default=SEED,
@@ -711,12 +727,13 @@ if __name__ == "__main__":
     NUM_WORKERS = args.num_workers
     DOWNSCALING_MIN = args.downscale_min
     NLL_WARMUP_EPOCHS = args.nll_warmup
+    TARGET = args.target
     SEED = args.seed
     CHECKPOINT_EVERY = args.checkpoint_every
     SELECTION_WINDOW = args.selection_window
     print(f"seed={SEED} augmentation: downscale_min={DOWNSCALING_MIN} "
           f"label_smooth=off gaussian_noise=off elastic=off "
-          f"target=log BF ~ N(mu, sigma) nll_warmup={NLL_WARMUP_EPOCHS}", flush=True)
+          f"target={TARGET} ~ N(mu, sigma) nll_warmup={NLL_WARMUP_EPOCHS}", flush=True)
 
     run_training(csv_path=Path(args.csv), root_img_dir=Path(args.root), out_dir=Path(args.out),
                  batch_size=args.batch_size, num_epochs=args.epochs, lr=args.lr,
