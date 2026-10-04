@@ -1,6 +1,7 @@
 # <keep your existing header/docstring>
 
 import os
+import math
 import random
 import argparse
 from pathlib import Path
@@ -33,6 +34,12 @@ EFFNET_VARIANT = "v2_s"
 # "logmass" (log dry mass straight from the image; a reviewer-requested comparison).
 # The images are the same 224 px crops either way, so "logmass" gets no physical scale.
 TARGET = "logbf"
+
+# Weight of the resolution-consistency penalty (0 = off). A random quarter of each batch is
+# also seen at reduced resolution or blurred; the penalty is the squared gap between its mu
+# and the clean mu, in units of the clean sigma, with the clean prediction held fixed. The
+# insect's physical size is unchanged, so a model that reads size from sharpness pays for it.
+RES_CONSISTENCY = 0.0
 
 OUT_DIR = Path(f"01_runs/gaussian_logbf_effnet{EFFNET_VARIANT}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
 
@@ -323,6 +330,23 @@ def get_transforms(split: str):
 
 # -------------------- TRAIN / VAL LOOP --------------------
 
+def degrade_resolution(x: torch.Tensor) -> torch.Tensor:
+    """Per image, either resample down by 1.5-16x and back up, or Gaussian-blur with sigma 0.5-8 px."""
+    H, W = x.shape[-2:]
+    out = []
+    for img in x:
+        if random.random() < 0.5:
+            f = math.exp(random.uniform(math.log(1.5), math.log(16)))
+            small = nn.functional.interpolate(img[None], size=(max(4, round(H / f)), max(4, round(W / f))), mode="area")
+            img = nn.functional.interpolate(small, size=(H, W), mode="bicubic", align_corners=False)[0].clamp(0, 1)
+        else:
+            sig = random.uniform(0.5, 8.0)
+            k = 2 * math.ceil(3 * sig) + 1
+            img = F.gaussian_blur(img, [k, k], [sig, sig])
+        out.append(img)
+    return torch.stack(out)
+
+
 def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch):
     model.train()
     running_loss = 0.0
@@ -340,9 +364,16 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch):
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True).unsqueeze(1)  # shape (B,1), log BF
 
-        preds = model(images)  # shape (B,2): mu, log sigma
-
-        loss = criterion(preds, targets)
+        if RES_CONSISTENCY > 0:
+            n_deg = max(1, images.size(0) // 4)  # a quarter keeps batch 64 within 16 GB
+            out = model(torch.cat([images, degrade_resolution(images[:n_deg])]))
+            preds, preds_deg = out[:images.size(0)], out[images.size(0):]
+            mu_c, log_sigma_c = split_output(preds[:n_deg].detach())
+            gap = (preds_deg[:, :1] - mu_c) * torch.exp(-log_sigma_c)
+            loss = criterion(preds, targets) + RES_CONSISTENCY * (gap ** 2).mean()
+        else:
+            preds = model(images)  # shape (B,2): mu, log sigma
+            loss = criterion(preds, targets)
 
         optimizer.zero_grad()
         loss.backward()
@@ -712,6 +743,8 @@ if __name__ == "__main__":
                         help="Lower bound of the scale-augmentation factor (1.0 disables it)")
     parser.add_argument("--target", choices=["logbf", "logmass"], default=TARGET,
                         help="predict log BF (default) or log dry mass directly from the image")
+    parser.add_argument("--res-consistency", type=float, default=RES_CONSISTENCY,
+                        help="weight of the penalty on mu changing when resolution drops (0 = off)")
     parser.add_argument("--nll-warmup", type=int, default=NLL_WARMUP_EPOCHS,
                         help="Epochs of MSE on the mean before switching to the Gaussian NLL (0 = none)")
     parser.add_argument("--seed", type=int, default=SEED,
@@ -728,12 +761,14 @@ if __name__ == "__main__":
     DOWNSCALING_MIN = args.downscale_min
     NLL_WARMUP_EPOCHS = args.nll_warmup
     TARGET = args.target
+    RES_CONSISTENCY = args.res_consistency
     SEED = args.seed
     CHECKPOINT_EVERY = args.checkpoint_every
     SELECTION_WINDOW = args.selection_window
     print(f"seed={SEED} augmentation: downscale_min={DOWNSCALING_MIN} "
           f"label_smooth=off gaussian_noise=off elastic=off "
-          f"target={TARGET} ~ N(mu, sigma) nll_warmup={NLL_WARMUP_EPOCHS}", flush=True)
+          f"target={TARGET} ~ N(mu, sigma) nll_warmup={NLL_WARMUP_EPOCHS} "
+          f"res_consistency={RES_CONSISTENCY}", flush=True)
 
     run_training(csv_path=Path(args.csv), root_img_dir=Path(args.root), out_dir=Path(args.out),
                  batch_size=args.batch_size, num_epochs=args.epochs, lr=args.lr,
