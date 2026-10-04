@@ -31,7 +31,7 @@ import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
-from models import build_efficientnet, load_weights_to_model
+from models import build_efficientnet, load_weights_to_model, load_gaussian_model, call_gaussian_model
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Must match 02-train.py.
@@ -47,13 +47,15 @@ class ImageDataset(Dataset):
     """Images from IMAGE_FILENAME, with the same ToTensor-only transform as val/test in 02-train.py."""
     def __init__(self, df: pd.DataFrame):
         self.paths = df["IMAGE_FILENAME"].tolist()
+        # [log L, log projected area], used only by scale-input models
+        self.scales = np.log(df[["ROI_SIZE_MM", "AREA_MM2"]].to_numpy(dtype=np.float32))
         self.transform = T.ToTensor()
 
     def __len__(self):
         return len(self.paths)
 
     def __getitem__(self, idx):
-        return self.transform(Image.open(self.paths[idx]).convert("RGB"))
+        return self.transform(Image.open(self.paths[idx]).convert("RGB")), torch.from_numpy(self.scales[idx])
 
 
 def log_mass_error(y, mu, target):
@@ -83,8 +85,7 @@ def select_checkpoint(run_dir: Path, window: int, target: str, val_df: pd.DataFr
     y = np.log(val_df[col].to_numpy(dtype=float))
     scores = {}
     for e in saved:
-        model = build_efficientnet(variant=args.variant, pretrained=False, n_outputs=2)
-        model = load_weights_to_model(model, run_dir / f"checkpoint_epoch{e}.pt", DEVICE).eval()
+        model = load_gaussian_model(run_dir / f"checkpoint_epoch{e}.pt", DEVICE, args.variant)
         mu = run_model(model, val_df, args.batch_size, args.num_workers)[:, 0]
         scores[e] = float(np.mean(np.abs(log_mass_error(y, mu, target))))
         print(f"  checkpoint epoch {e:4d}: val mean |log ratio| {scores[e]:.4f}", flush=True)
@@ -96,8 +97,8 @@ def select_checkpoint(run_dir: Path, window: int, target: str, val_df: pd.DataFr
 def run_model(model, df, batch_size, num_workers):
     loader = DataLoader(ImageDataset(df), batch_size=batch_size, shuffle=False, num_workers=num_workers)
     out = []
-    for images in loader:
-        out.append(model(images.to(DEVICE)).cpu().numpy())
+    for images, scales in loader:
+        out.append(call_gaussian_model(model, images.to(DEVICE), scales.to(DEVICE)).cpu().numpy())
     return np.concatenate(out, axis=0)
 
 
@@ -148,8 +149,7 @@ def main():
     how, epoch, ckpt = select_checkpoint(args.run, args.selection_window, args.target, parts["val"], args)
     print(f"Selected checkpoint epoch {epoch} ({ckpt.name}) by {how}")
 
-    model = build_efficientnet(variant=args.variant, pretrained=False, n_outputs=2)
-    model = load_weights_to_model(model, ckpt, DEVICE).eval()
+    model = load_gaussian_model(ckpt, DEVICE, args.variant)
 
     preds, report = {}, {}
     for split, d in parts.items():

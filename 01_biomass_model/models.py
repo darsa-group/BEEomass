@@ -61,6 +61,30 @@ def build_efficientnet(variant: str = "b0", pretrained: bool = True, n_outputs: 
     return model
 
 
+class ScaleInputNet(nn.Module):
+    """EfficientNet whose head also receives physical scale as numbers (log L, log area).
+
+    The image features go through the usual dropout; the scale inputs bypass it, are
+    standardised with buffers set from the training data (saved in the state dict), and are
+    concatenated before the final linear layer. Used for the reviewer comparison: a direct
+    log-mass model that is told the specimen's size instead of having it built in as BF.
+    """
+
+    def __init__(self, variant: str = "v2_s", pretrained: bool = True, n_outputs: int = 2, n_scale: int = 2):
+        super().__init__()
+        self.backbone = build_efficientnet(variant, pretrained, n_outputs)
+        in_features = self.backbone.classifier[-1].in_features
+        self.backbone.classifier = nn.Identity()
+        self.dropout = nn.Dropout(p=0.6)
+        self.head = nn.Linear(in_features + n_scale, n_outputs)
+        self.register_buffer("scale_mean", torch.zeros(n_scale))
+        self.register_buffer("scale_std", torch.ones(n_scale))
+
+    def forward(self, x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+        s = (scale - self.scale_mean) / self.scale_std
+        return self.head(torch.cat([self.dropout(self.backbone(x)), s], dim=1))
+
+
 def load_weights_to_model(model: nn.Module, weights_path: Path, device: torch.device):
     """Attempt to load weights. Supports either saved state_dict or a full model object file.
     Returns model on `device`.
@@ -101,3 +125,21 @@ def load_weights_to_model(model: nn.Module, weights_path: Path, device: torch.de
             )
 
     return model.to(device)
+
+
+def load_gaussian_model(weights_path: Path, device: torch.device, variant: str = "v2_s") -> nn.Module:
+    """Load a 2-output (mu, log sigma) checkpoint, as a ScaleInputNet if it was trained with
+    scale inputs (its state dict then holds `scale_mean`), else as a plain EfficientNet."""
+    data = torch.load(Path(weights_path), map_location=device)
+    state = data["model_state_dict"] if isinstance(data, dict) and "model_state_dict" in data else data
+    if "scale_mean" in state:
+        model = ScaleInputNet(variant=variant, pretrained=False, n_outputs=2)
+    else:
+        model = build_efficientnet(variant=variant, pretrained=False, n_outputs=2)
+    model.load_state_dict(state)
+    return model.to(device).eval()
+
+
+def call_gaussian_model(model: nn.Module, images: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
+    """Scale-input models take (images, [log L, log area]); the others ignore the scales."""
+    return model(images, scales) if isinstance(model, ScaleInputNet) else model(images)

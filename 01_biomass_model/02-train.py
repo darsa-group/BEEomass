@@ -18,7 +18,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
-from models import build_efficientnet
+from models import build_efficientnet, ScaleInputNet
 from datetime import datetime
 
 
@@ -40,6 +40,10 @@ TARGET = "logbf"
 # and the clean mu, in units of the clean sigma, with the clean prediction held fixed. The
 # insect's physical size is unchanged, so a model that reads size from sharpness pays for it.
 RES_CONSISTENCY = 0.0
+
+# Feed physical scale (log L, log projected area) to the head as numbers (ScaleInputNet).
+# For the reviewer comparison with --target logmass: a direct model that is told the size.
+SCALE_INPUT = False
 
 OUT_DIR = Path(f"01_runs/gaussian_logbf_effnet{EFFNET_VARIANT}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
 
@@ -252,7 +256,7 @@ class ImageRegDataset(Dataset):
         self.df = df[df["SPLIT"] == split][df["IS_VALID"] == True].reset_index(drop=True).copy()
 
         # Column checks
-        required_cols = {"IMAGE_FILENAME", "DATASET", "BF_cbrMG_MM", "DRYMASS_MG"}
+        required_cols = {"IMAGE_FILENAME", "DATASET", "BF_cbrMG_MM", "DRYMASS_MG", "ROI_SIZE_MM", "AREA_MM2"}
 
         missing = required_cols - set(self.df.columns)
 
@@ -296,7 +300,11 @@ class ImageRegDataset(Dataset):
             # Shrinking the specimen inside a fixed frame is a specimen s times smaller, i.e.
             # s^3 times lighter under isometry: the same physics as the BF rule above.
             target = float(np.log(float(row["DRYMASS_MG"])) + 3 * np.log(scale))
-        return img, torch.tensor(target, dtype=torch.float32)
+        # Physical scale as seen by a ScaleInputNet: the frame (L) is unchanged by the
+        # downscale augmentation, while the specimen's projected area shrinks by scale^2.
+        scale_in = torch.tensor([np.log(float(row["ROI_SIZE_MM"])),
+                                 np.log(float(row["AREA_MM2"])) + 2 * np.log(scale)], dtype=torch.float32)
+        return img, scale_in, torch.tensor(target, dtype=torch.float32)
 
 # -------------------- TRANSFORMS --------------------
 
@@ -368,6 +376,11 @@ def degrade_resolution(x: torch.Tensor) -> torch.Tensor:
     return torch.stack(out)
 
 
+def call_model(model, images, scales):
+    """Scale-input models take (images, scales); the others ignore the scales."""
+    return model(images, scales) if isinstance(model, ScaleInputNet) else model(images)
+
+
 def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch):
     model.train()
     running_loss = 0.0
@@ -377,23 +390,25 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch):
     preds_all = []
     targets_all = []
 
-    for images, targets in dataloader:
+    for images, scales, targets in dataloader:
         if DEBUG_TILES:
             # Costs ~24 ms/batch (~13% of an epoch at batch 32) - opt in only.
             tile_images_cv2(images, cols=8, pad=2, to_bgr=True, resize_to=(128, 128),
                             window_name="train batch", show=True)
         images = images.to(device, non_blocking=True)
+        scales = scales.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True).unsqueeze(1)  # shape (B,1), log BF
 
         if RES_CONSISTENCY > 0:
             n_deg = max(1, images.size(0) // 4)  # a quarter keeps batch 64 within 16 GB
-            out = model(torch.cat([images, degrade_resolution(images[:n_deg])]))
+            out = call_model(model, torch.cat([images, degrade_resolution(images[:n_deg])]),
+                             torch.cat([scales, scales[:n_deg]]))
             preds, preds_deg = out[:images.size(0)], out[images.size(0):]
             mu_c, log_sigma_c = split_output(preds[:n_deg].detach())
             gap = (preds_deg[:, :1] - mu_c) * torch.exp(-log_sigma_c)
             loss = criterion(preds, targets) + RES_CONSISTENCY * (gap ** 2).mean()
         else:
-            preds = model(images)  # shape (B,2): mu, log sigma
+            preds = call_model(model, images, scales)  # shape (B,2): mu, log sigma
             loss = criterion(preds, targets)
 
         optimizer.zero_grad()
@@ -424,11 +439,11 @@ def validate(model, dataloader, criterion, device, epoch):
     preds_all = []
     targets_all = []
 
-    for images, targets in dataloader:
+    for images, scales, targets in dataloader:
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True).unsqueeze(1)
 
-        preds = model(images)
+        preds = call_model(model, images, scales.to(device, non_blocking=True))
         loss = criterion(preds, targets)
 
         preds_all.append(preds.detach().cpu().numpy())
@@ -633,7 +648,14 @@ def run_training(
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=PIN_MEMORY, persistent_workers=PERSISTENT_WORKERS)
 
     # Model, optimizer, loss
-    model = build_efficientnet(variant = EFFNET_VARIANT, pretrained=True, n_outputs=2).to(device)
+    if SCALE_INPUT:
+        model = ScaleInputNet(variant=EFFNET_VARIANT, pretrained=True, n_outputs=2)
+        sc = np.log(train_ds.df[["ROI_SIZE_MM", "AREA_MM2"]].to_numpy(dtype=float))
+        model.scale_mean.copy_(torch.tensor(sc.mean(0), dtype=torch.float32))
+        model.scale_std.copy_(torch.tensor(sc.std(0), dtype=torch.float32))
+        model = model.to(device)
+    else:
+        model = build_efficientnet(variant = EFFNET_VARIANT, pretrained=True, n_outputs=2).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=STEP_LR_STEP, gamma=STEP_LR_GAMMA)
@@ -737,6 +759,8 @@ if __name__ == "__main__":
                         help="Show each training batch in an OpenCV window (slow: ~24 ms/batch)")
     parser.add_argument("--downscale-min", type=float, default=DOWNSCALING_MIN,
                         help="Lower bound of the scale-augmentation factor (1.0 disables it)")
+    parser.add_argument("--scale-input", action="store_true",
+                        help="feed log L and log projected area to the head (ScaleInputNet)")
     parser.add_argument("--target", choices=["logbf", "logmass"], default=TARGET,
                         help="predict log BF (default) or log dry mass directly from the image")
     parser.add_argument("--res-consistency", type=float, default=RES_CONSISTENCY,
@@ -757,6 +781,7 @@ if __name__ == "__main__":
     DOWNSCALING_MIN = args.downscale_min
     NLL_WARMUP_EPOCHS = args.nll_warmup
     TARGET = args.target
+    SCALE_INPUT = args.scale_input
     RES_CONSISTENCY = args.res_consistency
     SEED = args.seed
     CHECKPOINT_EVERY = args.checkpoint_every
@@ -764,7 +789,7 @@ if __name__ == "__main__":
     print(f"seed={SEED} augmentation: downscale_min={DOWNSCALING_MIN} "
           f"label_smooth=off gaussian_noise=off elastic=off "
           f"target={TARGET} ~ N(mu, sigma) nll_warmup={NLL_WARMUP_EPOCHS} "
-          f"res_consistency={RES_CONSISTENCY}", flush=True)
+          f"res_consistency={RES_CONSISTENCY} scale_input={SCALE_INPUT}", flush=True)
 
     run_training(csv_path=Path(args.csv), root_img_dir=Path(args.root), out_dir=Path(args.out),
                  batch_size=args.batch_size, num_epochs=args.epochs, lr=args.lr,

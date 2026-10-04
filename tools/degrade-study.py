@@ -18,7 +18,7 @@ from PIL import Image, ImageFilter, ImageEnhance
 from torch.utils.data import DataLoader, Dataset
 
 sys.path.insert(0, str(Path.cwd()))
-from models import build_efficientnet, load_weights_to_model
+from models import load_gaussian_model, call_gaussian_model
 
 LOG_SIGMA_MIN, LOG_SIGMA_MAX, Z95 = -7.0, 2.0, 1.959964
 
@@ -68,8 +68,8 @@ def degrade(img: Image.Image, kind: str, level, seed: int) -> Image.Image:
 
 
 class DegradedDataset(Dataset):
-    def __init__(self, paths, kind, level):
-        self.paths, self.kind, self.level = paths, kind, level
+    def __init__(self, paths, scales, kind, level):
+        self.paths, self.scales, self.kind, self.level = paths, scales, kind, level
         self.to_tensor = T.ToTensor()
 
     def __len__(self):
@@ -77,7 +77,8 @@ class DegradedDataset(Dataset):
 
     def __getitem__(self, i):
         img = Image.open(self.paths[i]).convert("RGB")
-        return self.to_tensor(degrade(img, self.kind, self.level, seed=i))
+        # degradation leaves the physical size unchanged: same [log L, log area]
+        return self.to_tensor(degrade(img, self.kind, self.level, seed=i)), torch.from_numpy(self.scales[i])
 
 
 def main():
@@ -88,22 +89,23 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     d = pd.read_csv(pred_csv)
     paths = d.IMAGE_FILENAME.tolist()
+    area = pd.read_csv("metadata_enriched.csv").set_index("IMAGE_FILENAME").loc[d.IMAGE_FILENAME, "AREA_MM2"]
+    scales = np.log(np.column_stack([d.ROI_SIZE_MM.to_numpy(float), area.to_numpy(float)])).astype(np.float32)
     y = np.log(d.BF_cbrMG_MM.to_numpy(float))
     log_m = np.log(d.DRYMASS_MG.to_numpy(float))
     log_l = np.log(d.ROI_SIZE_MM.to_numpy(float))
 
-    model = build_efficientnet(variant="v2_s", pretrained=False, n_outputs=2)
-    model = load_weights_to_model(model, ckpt, device).eval()
+    model = load_gaussian_model(ckpt, device)
 
     rows, summary = [], []
     for kind in kinds:
         levels = DEGRADATIONS[kind]
         for li, level in enumerate(levels):
-            loader = DataLoader(DegradedDataset(paths, kind, level), batch_size=64, num_workers=8)
+            loader = DataLoader(DegradedDataset(paths, scales, kind, level), batch_size=64, num_workers=8)
             outs = []
             with torch.no_grad():
-                for x in loader:
-                    outs.append(model(x.to(device)).cpu().numpy())
+                for x, sc in loader:
+                    outs.append(call_gaussian_model(model, x.to(device), sc.to(device)).cpu().numpy())
             o = np.concatenate(outs)
             mu = o[:, 0]
             sigma = k * np.exp(np.clip(o[:, 1], LOG_SIGMA_MIN, LOG_SIGMA_MAX))
