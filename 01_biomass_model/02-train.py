@@ -124,22 +124,43 @@ def mu_mse(out: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Warm-up loss: MSE on the mean only; the log sigma output gets no gradient."""
     return ((out[:, :1] - y) ** 2).mean()
 
-def summarise_predictions(out_all: np.ndarray, y_all: np.ndarray):
-    """Metrics from (N,2) outputs and (N,) log BF targets.
+METRICS = ("r2", "mae", "mdape", "male", "cov95", "sigma")
 
-    For TARGET "logbf", R2 and MAE are on the BF scale, with exp(mu) (the predicted median
-    BF) as the point estimate, so they stay comparable with the point-regression runs.
-    For "logmass" they are on log mass: on the mg scale the MAE (also the checkpoint
-    selection metric) would be driven by the few heaviest specimens.
-    cov95 is the share of targets inside mu +- 1.96 sigma (0.95 if calibrated).
+
+def summarise_predictions(out_all: np.ndarray, y_all: np.ndarray) -> dict:
+    """Metrics from (N,2) outputs and (N,) log targets, as a dict keyed by METRICS.
+
+    mdape: median absolute % error on dry mass, |M_hat / M - 1| * 100, with the median of the
+        predicted distribution as M_hat. The headline accuracy figure.
+    male: mean absolute log ratio on dry mass, mean |log(M_hat / M)|; exp(male) is the typical
+        error factor. Symmetric in over- and underestimates, so it is the selection metric.
+    Both are on mass for either target: L is measured, so for "logbf" the log-mass error is
+    exactly 3x the log-BF error and needs no L here.
+    r2, mae: for "logbf" on the BF scale (comparable with the point-regression runs), for
+        "logmass" on log mass. Kept for continuity, not for decisions: on BF an MAE weights
+        every specimen alike in absolute BF, which hides that the lightest are worst in %.
+    cov95: share of targets inside mu +- 1.96 sigma (0.95 if calibrated). sigma: its mean.
     """
     if out_all.size == 0:
-        return 0.0, 0.0, 0.0, 0.0
+        return {k: 0.0 for k in METRICS}
     mu = out_all[:, 0]
     sigma = np.exp(np.clip(out_all[:, 1], LOG_SIGMA_MIN, LOG_SIGMA_MAX))
-    bf_true, bf_pred = (np.exp(y_all), np.exp(mu)) if TARGET == "logbf" else (y_all, mu)
-    cov95 = float(np.mean(np.abs(y_all - mu) <= Z95 * sigma))
-    return compute_r2(bf_true, bf_pred), compute_mae(bf_true, bf_pred), cov95, float(np.mean(sigma))
+    point_true, point_pred = (np.exp(y_all), np.exp(mu)) if TARGET == "logbf" else (y_all, mu)
+    log_mass_err = (3.0 if TARGET == "logbf" else 1.0) * (mu - y_all)
+    return {
+        "r2": compute_r2(point_true, point_pred),
+        "mae": compute_mae(point_true, point_pred),
+        "mdape": float(np.median(np.abs(np.expm1(log_mass_err))) * 100),
+        "male": float(np.mean(np.abs(log_mass_err))),
+        "cov95": float(np.mean(np.abs(y_all - mu) <= Z95 * sigma)),
+        "sigma": float(np.mean(sigma)),
+    }
+
+
+def format_metrics(m: dict) -> str:
+    return (f"R2: {m['r2']:.4f}  MAE: {m['mae']:.6f}  %err(median): {m['mdape']:.1f}  "
+            f"|log ratio|: {m['male']:.4f}  cov95: {m['cov95']:.3f}  sigma: {m['sigma']:.4f}")
+
 
 # -------------------- DATASET --------------------
 
@@ -390,11 +411,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch):
 
     preds_all = np.concatenate(preds_all, axis=0) if len(preds_all) > 0 else np.empty((0, 2))
     targets_all = np.concatenate(targets_all, axis=0) if len(targets_all) > 0 else np.array([])
-    train_r2, train_mae, train_cov95, train_sigma = summarise_predictions(preds_all, targets_all)
-
-    print(f"Epoch {epoch} train loss: {epoch_loss:.6f}  R2: {train_r2:.4f}  MAE: {train_mae:.6f}  "
-          f"cov95: {train_cov95:.3f}  sigma: {train_sigma:.4f}")
-    return epoch_loss, train_r2, train_mae, train_cov95, train_sigma
+    metrics = summarise_predictions(preds_all, targets_all)
+    print(f"Epoch {epoch} train loss: {epoch_loss:.6f}  {format_metrics(metrics)}")
+    return epoch_loss, metrics
 
 @torch.no_grad()
 def validate(model, dataloader, criterion, device, epoch):
@@ -423,11 +442,9 @@ def validate(model, dataloader, criterion, device, epoch):
 
     preds_all = np.concatenate(preds_all, axis=0) if len(preds_all) > 0 else np.empty((0, 2))
     targets_all = np.concatenate(targets_all, axis=0) if len(targets_all) > 0 else np.array([])
-    val_r2, val_mae, val_cov95, val_sigma = summarise_predictions(preds_all, targets_all)
-
-    print(f"Epoch {epoch} val loss: {epoch_loss:.6f}  R2: {val_r2:.4f}  MAE: {val_mae:.6f}  "
-          f"cov95: {val_cov95:.3f}  sigma: {val_sigma:.4f}")
-    return epoch_loss, val_r2, val_mae, val_cov95, val_sigma
+    metrics = summarise_predictions(preds_all, targets_all)
+    print(f"Epoch {epoch} val loss: {epoch_loss:.6f}  {format_metrics(metrics)}")
+    return epoch_loss, metrics
 
 # -------------------- MAIN TRAIN FUNCTION --------------------
 
@@ -628,26 +645,24 @@ def run_training(
     # write header
     # train_loss is the warm-up MSE for the first NLL_WARMUP_EPOCHS, the NLL after;
     # val_loss is always the NLL, so checkpoint selection compares like with like.
-    results_df = pd.DataFrame(columns=["epoch",
-                                       "train_loss", "train_r2", "train_mae", "train_cov95", "train_sigma",
-                                       "val_loss", "val_r2", "val_mae", "val_cov95", "val_sigma"])
-    results_df.to_csv(results_csv_path, index=False)
+    columns = (["epoch", "train_loss"] + [f"train_{k}" for k in METRICS]
+               + ["val_loss"] + [f"val_{k}" for k in METRICS])
+    pd.DataFrame(columns=columns).to_csv(results_csv_path, index=False)
 
-    history = {"train_loss": [], "val_loss": [], "val_mae": []}
+    history = {"train_loss": [], "val_loss": [], "val_male": []}
 
     for epoch in range(1, num_epochs + 1):
 
         # images: [B,3,H,W] float
 
         train_criterion = mu_mse if epoch <= NLL_WARMUP_EPOCHS else gaussian_nll
-        train_loss, train_r2, train_mae, train_cov95, train_sigma = train_one_epoch(
-            model, train_loader, optimizer, train_criterion, device, epoch)
-        val_loss, val_r2, val_mae, val_cov95, val_sigma = validate(model, val_loader, gaussian_nll, device, epoch)
+        train_loss, train_m = train_one_epoch(model, train_loader, optimizer, train_criterion, device, epoch)
+        val_loss, val_m = validate(model, val_loader, gaussian_nll, device, epoch)
         scheduler.step()
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
-        history["val_mae"].append(val_mae)
+        history["val_male"].append(val_m["male"])
 
         # checkpoint
         ckpt_path = out_dir / f"checkpoint_epoch{epoch}.pt"
@@ -667,19 +682,9 @@ def run_training(
             print(f"Saved new best model at epoch {epoch} with val_loss={val_loss:.6f}")
 
         # append epoch results to CSV
-        row = {
-            "epoch": epoch,
-            "train_loss": train_loss,
-            "train_r2": train_r2,
-            "train_mae": train_mae,
-            "train_cov95": train_cov95,
-            "train_sigma": train_sigma,
-            "val_loss": val_loss,
-            "val_r2": val_r2,
-            "val_mae": val_mae,
-            "val_cov95": val_cov95,
-            "val_sigma": val_sigma,
-        }
+        row = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss,
+               **{f"train_{k}": v for k, v in train_m.items()}, **{f"val_{k}": v for k, v in val_m.items()}}
+        row = {c: row[c] for c in columns}
         row_df = pd.DataFrame([row])
         row_df.to_csv(results_csv_path, mode="a", header=False, index=False)
 
@@ -689,39 +694,30 @@ def run_training(
     # 500 epochs picks whichever epoch happened to land in a noise dip. Selecting on
     # a centred rolling median of the validation loss instead. This cannot be done
     # online (it needs the future), so it runs here, against the periodic checkpoints.
-    # For the Gaussian head, select on val MAE, not val NLL: sigma shrinks as the model
+    # For the Gaussian head, select on accuracy, not val NLL: sigma shrinks as the model
     # fits the training set, so the NLL favours early, less accurate epochs. Their
-    # overconfidence is corrected afterwards by 04-calibrate.py.
-    sel_epoch, sel_path = select_checkpoint(out_dir, history["val_mae"],
+    # overconfidence is corrected afterwards by 04-calibrate.py. Accuracy here is the mean
+    # absolute log ratio on mass (a symmetric % error), not MAE on BF, which hides that
+    # the lightest specimens are the worst in relative terms.
+    sel_epoch, sel_path = select_checkpoint(out_dir, history["val_male"],
                                             window=SELECTION_WINDOW,
                                             every=CHECKPOINT_EVERY)
     if sel_path is not None:
         print(f"Selected checkpoint: epoch {sel_epoch} -> {sel_path.name} "
-              f"(smoothed val-MAE argmin, window {SELECTION_WINDOW})", flush=True)
+              f"(smoothed val |log ratio| argmin, window {SELECTION_WINDOW})", flush=True)
 
     # final test evaluation
-    test_loss, test_r2, test_mae, test_cov95, test_sigma = validate(model, test_loader, gaussian_nll, device, epoch="test")
-    print(f"Final test loss: {test_loss:.6f}  R2: {test_r2:.4f}  MAE: {test_mae:.6f}  "
-          f"cov95: {test_cov95:.3f}  sigma: {test_sigma:.4f}")
+    test_loss, test_m = validate(model, test_loader, gaussian_nll, device, epoch="test")
+    print(f"Final test loss (last epoch's model): {test_loss:.6f}  {format_metrics(test_m)}")
 
     # save history (optional)
     hist_df = pd.DataFrame(history)
     hist_df.to_csv(out_dir / "history.csv", index=False)
 
     # optionally append final test row into epoch_results.csv as epoch='test'
-    final_row = {
-        "epoch": "test",
-        "train_loss": np.nan,
-        "train_r2": np.nan,
-        "train_mae": np.nan,
-        "train_cov95": np.nan,
-        "train_sigma": np.nan,
-        "val_loss": test_loss,
-        "val_r2": test_r2,
-        "val_mae": test_mae,
-        "val_cov95": test_cov95,
-        "val_sigma": test_sigma,
-    }
+    final_row = {"epoch": "test", "train_loss": np.nan, "val_loss": test_loss,
+                 **{f"train_{k}": np.nan for k in METRICS}, **{f"val_{k}": v for k, v in test_m.items()}}
+    final_row = {c: final_row[c] for c in columns}
     pd.DataFrame([final_row]).to_csv(results_csv_path, mode="a", header=False, index=False)
 
     return history

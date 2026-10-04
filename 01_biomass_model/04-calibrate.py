@@ -1,8 +1,10 @@
 """
 Post-hoc calibration of a Gaussian log-BF run.
 
-1. Select a checkpoint by the smoothed validation MAE (accuracy), rather than the
-   validation NLL, which favours early, under-fitted epochs whose sigma is still honest.
+1. Select a checkpoint by validation accuracy in % terms (mean |log ratio| on mass), rather
+   than the validation NLL, which favours early, under-fitted epochs whose sigma is still
+   honest. Runs that log `val_male` per epoch use its smoothed curve; older runs have every
+   saved checkpoint scored on validation directly.
 2. Predict the val and test splits with it.
 3. Fit one factor k on validation so that sigma' = k * sigma. The NLL-optimal value has a
    closed form: d/dk mean(log(k sigma) + z^2 / (2 k^2)) = 0  =>  k = sqrt(mean(z^2)),
@@ -54,17 +56,40 @@ class ImageDataset(Dataset):
         return self.transform(Image.open(self.paths[idx]).convert("RGB"))
 
 
-def select_by_val_mae(run_dir: Path, window: int):
-    """Nearest saved checkpoint to the argmin of the centred rolling median of val MAE."""
-    res = pd.read_csv(run_dir / "epoch_results.csv")
-    res = res[res["epoch"] != "test"].astype({"epoch": int})
-    smooth = res["val_mae"].rolling(window, center=True, min_periods=1).median()
-    target = int(res["epoch"].iloc[int(np.argmin(smooth.to_numpy()))])
+def log_mass_error(y, mu, target):
+    """Per-image log(M_hat / M); for "logbf" it is 3x the log-BF error, as L is measured."""
+    return (3.0 if target == "logbf" else 1.0) * (mu - y)
+
+
+def select_checkpoint(run_dir: Path, window: int, target: str, val_df: pd.DataFrame, args):
+    """Saved checkpoint with the lowest validation mean |log ratio| on mass.
+
+    Returns (description, epoch, path). With a per-epoch `val_male` column, the nearest saved
+    checkpoint to the argmin of its centred rolling median; otherwise every saved checkpoint
+    is scored on the validation split.
+    """
     saved = sorted(int(p.stem.replace("checkpoint_epoch", "")) for p in run_dir.glob("checkpoint_epoch*.pt"))
     if not saved:
         raise FileNotFoundError(f"No checkpoint_epoch*.pt in {run_dir}")
-    nearest = min(saved, key=lambda e: abs(e - target))
-    return target, nearest, run_dir / f"checkpoint_epoch{nearest}.pt"
+    res = pd.read_csv(run_dir / "epoch_results.csv")
+    res = res[res["epoch"] != "test"].astype({"epoch": int})
+    if "val_male" in res.columns:
+        smooth = res["val_male"].rolling(window, center=True, min_periods=1).median()
+        best = int(res["epoch"].iloc[int(np.argmin(smooth.to_numpy()))])
+        nearest = min(saved, key=lambda e: abs(e - best))
+        how = f"rolling median of val |log ratio| (window {window}), argmin epoch {best}"
+        return how, nearest, run_dir / f"checkpoint_epoch{nearest}.pt"
+    col = "BF_cbrMG_MM" if target == "logbf" else "DRYMASS_MG"
+    y = np.log(val_df[col].to_numpy(dtype=float))
+    scores = {}
+    for e in saved:
+        model = build_efficientnet(variant=args.variant, pretrained=False, n_outputs=2)
+        model = load_weights_to_model(model, run_dir / f"checkpoint_epoch{e}.pt", DEVICE).eval()
+        mu = run_model(model, val_df, args.batch_size, args.num_workers)[:, 0]
+        scores[e] = float(np.mean(np.abs(log_mass_error(y, mu, target))))
+        print(f"  checkpoint epoch {e:4d}: val mean |log ratio| {scores[e]:.4f}", flush=True)
+    best = min(scores, key=scores.get)
+    return "val mean |log ratio| of each saved checkpoint", best, run_dir / f"checkpoint_epoch{best}.pt"
 
 
 @torch.no_grad()
@@ -76,12 +101,22 @@ def run_model(model, df, batch_size, num_workers):
     return np.concatenate(out, axis=0)
 
 
+def accuracy_on_mass(log_err):
+    """% accuracy of dry mass from per-image log(M_hat / M)."""
+    ape = np.abs(np.expm1(log_err)) * 100
+    return {"mdape": float(np.median(ape)), "male": float(np.mean(np.abs(log_err))),
+            "within10": float(np.mean(ape <= 10)), "within25": float(np.mean(ape <= 25)),
+            "within50": float(np.mean(ape <= 50))}
+
+
 def gaussian_metrics(y, mu, sigma, target="logbf"):
-    """y, mu, sigma on the log target. Accuracy on the BF scale for "logbf", on log mass
-    for "logmass", as in 02-train.py."""
+    """y, mu, sigma on the log target. mdape (median % error), male (mean |log ratio|) and
+    withinX (share within X%) are on dry mass for either target. r2 and mae are on the BF
+    scale for "logbf" and on log mass for "logmass", as in 02-train.py, for continuity."""
     bf, bf_pred = (np.exp(y), np.exp(mu)) if target == "logbf" else (y, mu)
     z = (y - mu) / sigma
     m = {
+        **accuracy_on_mass(log_mass_error(y, mu, target)),
         "r2": float(1 - np.sum((bf - bf_pred) ** 2) / np.sum((bf - bf.mean()) ** 2)),
         "mae": float(np.mean(np.abs(bf - bf_pred))),
         "nll": float(np.mean(np.log(sigma) + 0.5 * z ** 2)),  # without 0.5*log(2*pi), as in training
@@ -106,12 +141,12 @@ def main():
     ap.add_argument("--num-workers", type=int, default=8)
     args = ap.parse_args()
 
-    target, epoch, ckpt = select_by_val_mae(args.run, args.selection_window)
-    print(f"Smoothed val-MAE minimum at epoch {target}; using saved checkpoint epoch {epoch} ({ckpt.name})")
-
     df = pd.read_csv(args.csv)
     df = df[df["IS_VALID"] == True]
     parts = {s: df[df["SPLIT"] == s].reset_index(drop=True) for s in ("val", "test")}
+
+    how, epoch, ckpt = select_checkpoint(args.run, args.selection_window, args.target, parts["val"], args)
+    print(f"Selected checkpoint epoch {epoch} ({ckpt.name}) by {how}")
 
     model = build_efficientnet(variant=args.variant, pretrained=False, n_outputs=2)
     model = load_weights_to_model(model, ckpt, DEVICE).eval()
@@ -139,6 +174,7 @@ def main():
         bf = parts["test"]["BF_cbrMG_MM"].to_numpy(dtype=float)
         bf_pred = run_model(base, parts["test"], args.batch_size, args.num_workers).reshape(-1)
         report["test"]["baseline"] = {
+            **accuracy_on_mass(3.0 * (np.log(np.clip(bf_pred, 1e-6, None)) - np.log(bf))),
             "r2": float(1 - np.sum((bf - bf_pred) ** 2) / np.sum((bf - bf.mean()) ** 2)),
             "mae": float(np.mean(np.abs(bf - bf_pred))),
         }
@@ -148,12 +184,11 @@ def main():
         for kind, m in r.items():
             rows.append({"split": split, "model": kind, **m})
     table = pd.DataFrame(rows).set_index(["split", "model"])
-    with pd.option_context("display.float_format", "{:.4f}".format, "display.width", 140):
+    with pd.option_context("display.float_format", "{:.4f}".format, "display.width", 220, "display.max_columns", None):
         print(table)
 
     calib = {
-        "target": args.target, "checkpoint": ckpt.name, "epoch": epoch, "smoothed_val_mae_argmin": target,
-        "selection": f"rolling median of val_mae, window {args.selection_window}",
+        "target": args.target, "checkpoint": ckpt.name, "epoch": epoch, "selection": how,
         "sigma_scale": k, "sigma_scale_cov95": k95,
         "baseline": str(args.baseline) if args.baseline else None,
         "metrics": report,
