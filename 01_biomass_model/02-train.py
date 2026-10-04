@@ -19,6 +19,7 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import torchvision.transforms.functional as F
 from models import build_efficientnet, ScaleInputNet
+from chimera import load_crop, make_chimera, PartnerSampler
 from datetime import datetime
 
 
@@ -44,6 +45,10 @@ RES_CONSISTENCY = 0.0
 # Feed physical scale (log L, log projected area) to the head as numbers (ScaleInputNet).
 # For the reviewer comparison with --target logmass: a direct model that is told the size.
 SCALE_INPUT = False
+
+# Share of training samples replaced by a two-insect composite of weighed specimens (0 = off).
+# Its target is exact: mass adds, so BF_C = (M_A + M_B)^(1/3) / L_C (see chimera.py).
+CHIMERA_FRACTION = 0.0
 
 OUT_DIR = Path(f"01_runs/gaussian_logbf_effnet{EFFNET_VARIANT}/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}")
 
@@ -256,14 +261,21 @@ class ImageRegDataset(Dataset):
         self.df = df[df["SPLIT"] == split][df["IS_VALID"] == True].reset_index(drop=True).copy()
 
         # Column checks
-        required_cols = {"IMAGE_FILENAME", "DATASET", "BF_cbrMG_MM", "DRYMASS_MG", "ROI_SIZE_MM", "AREA_MM2"}
+        required_cols = {"IMAGE_FILENAME", "DATASET", "BF_cbrMG_MM", "DRYMASS_MG", "ROI_SIZE_MM", "AREA_MM2",
+                         "INSECT_ID", "DPI", "ORIGINAL_IMAGE_FILENAME"}
 
         missing = required_cols - set(self.df.columns)
 
         if self.split == "train":
             self.rescale_aug = RandomDownscale()
+            # stored on the instance: dataloader workers re-import this module
+            self.chimera_fraction = CHIMERA_FRACTION
+            if self.chimera_fraction > 0:
+                self.partner = PartnerSampler(self.df["DRYMASS_MG"].to_numpy(float),
+                                              self.df["INSECT_ID"].to_numpy(), self.df["DATASET"].to_numpy())
         else:
             self.rescale_aug = None
+            self.chimera_fraction = 0.0
 
         if missing:
             raise ValueError(f"DataFrame is missing required columns: {sorted(missing)}")
@@ -282,6 +294,17 @@ class ImageRegDataset(Dataset):
             raise FileNotFoundError(f"Image not found: {img_path}")
 
         img = Image.open(img_path).convert("RGB")
+        bf, mass = float(row["BF_cbrMG_MM"]), float(row["DRYMASS_MG"])
+        roi, area = float(row["ROI_SIZE_MM"]), float(row["AREA_MM2"])
+
+        if self.chimera_fraction > 0 and random.random() < self.chimera_fraction:
+            # Replace the sample by this specimen plus a partner of similar mass, at true
+            # relative scale. Mass and area add; L and hence BF come from the composite crop.
+            other = self.df.iloc[self.partner(idx, random)]
+            img, roi, _ = make_chimera(load_crop(row), load_crop(other), random)
+            mass = mass + float(other["DRYMASS_MG"])
+            area = area + float(other["AREA_MM2"])
+            bf = mass ** (1 / 3) / roi
 
         if self.rescale_aug:
             img, scale = self.rescale_aug(img)
@@ -295,15 +318,14 @@ class ImageRegDataset(Dataset):
         # NOT scale**3: BF is already a cube root, so cubing applies the exponent twice.
         # This deviates from Eq (6) of the manuscript, which is incorrect.
         # On the log scale the shrink is additive: log(scale * BF) = log BF + log scale.
-        target = float(np.log(float(row["BF_cbrMG_MM"]) * scale))
+        target = float(np.log(bf * scale))
         if self.target == "logmass":
             # Shrinking the specimen inside a fixed frame is a specimen s times smaller, i.e.
             # s^3 times lighter under isometry: the same physics as the BF rule above.
-            target = float(np.log(float(row["DRYMASS_MG"])) + 3 * np.log(scale))
+            target = float(np.log(mass) + 3 * np.log(scale))
         # Physical scale as seen by a ScaleInputNet: the frame (L) is unchanged by the
         # downscale augmentation, while the specimen's projected area shrinks by scale^2.
-        scale_in = torch.tensor([np.log(float(row["ROI_SIZE_MM"])),
-                                 np.log(float(row["AREA_MM2"])) + 2 * np.log(scale)], dtype=torch.float32)
+        scale_in = torch.tensor([np.log(roi), np.log(area) + 2 * np.log(scale)], dtype=torch.float32)
         return img, scale_in, torch.tensor(target, dtype=torch.float32)
 
 # -------------------- TRANSFORMS --------------------
@@ -759,6 +781,8 @@ if __name__ == "__main__":
                         help="Show each training batch in an OpenCV window (slow: ~24 ms/batch)")
     parser.add_argument("--downscale-min", type=float, default=DOWNSCALING_MIN,
                         help="Lower bound of the scale-augmentation factor (1.0 disables it)")
+    parser.add_argument("--chimera-fraction", type=float, default=CHIMERA_FRACTION,
+                        help="share of training samples replaced by two-insect composites with exact targets")
     parser.add_argument("--scale-input", action="store_true",
                         help="feed log L and log projected area to the head (ScaleInputNet)")
     parser.add_argument("--target", choices=["logbf", "logmass"], default=TARGET,
@@ -782,6 +806,7 @@ if __name__ == "__main__":
     NLL_WARMUP_EPOCHS = args.nll_warmup
     TARGET = args.target
     SCALE_INPUT = args.scale_input
+    CHIMERA_FRACTION = args.chimera_fraction
     RES_CONSISTENCY = args.res_consistency
     SEED = args.seed
     CHECKPOINT_EVERY = args.checkpoint_every
@@ -789,7 +814,7 @@ if __name__ == "__main__":
     print(f"seed={SEED} augmentation: downscale_min={DOWNSCALING_MIN} "
           f"label_smooth=off gaussian_noise=off elastic=off "
           f"target={TARGET} ~ N(mu, sigma) nll_warmup={NLL_WARMUP_EPOCHS} "
-          f"res_consistency={RES_CONSISTENCY} scale_input={SCALE_INPUT}", flush=True)
+          f"res_consistency={RES_CONSISTENCY} scale_input={SCALE_INPUT} chimera_fraction={CHIMERA_FRACTION}", flush=True)
 
     run_training(csv_path=Path(args.csv), root_img_dir=Path(args.root), out_dir=Path(args.out),
                  batch_size=args.batch_size, num_epochs=args.epochs, lr=args.lr,
