@@ -24,8 +24,9 @@ from datetime import datetime
 
 # -------------------- CONSTANTS / HYPERPARAMS --------------------
 # Paths
-ROOT_IMG_DIR = Path("00_data/02_resized")            # <- change me
-METADATA_CSV = Path("metadata_enriched.csv")      # <- change me
+MODEL_TYPE = "D-CNN"         # <- change me
+ROOT_IMG_DIR = Path("I:/BEE_qg_2026-11-05/01_biomass_model/00_data/02_resized")            # <- change me
+METADATA_CSV = Path("I:/BEE_qg_2026-11-05/01_biomass_model/metadata_enriched.csv")      # <- change me
 # RESNET_ARCH = "50"
 EFFNET_VARIANT = "v2_s"
 
@@ -179,7 +180,9 @@ class ImageRegDataset(Dataset):
         self.df = df[df["SPLIT"] == split][df["IS_VALID"] == True].reset_index(drop=True).copy()
 
         # Column checks
-        required_cols = {"IMAGE_FILENAME", "DATASET", "BF_cbrMG_MM"}
+        self.target_mode = MODEL_TYPE
+        target_column = "BF_cbrMG_MM" if self.target_mode == "BF-CNN" else "DRYMASS_MG"
+        required_cols = {"IMAGE_FILENAME", "DATASET", target_column}
 
         missing = required_cols - set(self.df.columns)
 
@@ -194,31 +197,72 @@ class ImageRegDataset(Dataset):
     def __len__(self):
         return len(self.df)
 
+    # def __getitem__(self, idx):
+    #     row = self.df.iloc[idx]
+    #
+    #     img_path = Path(row["IMAGE_FILENAME"])
+    #     # print(row.DATASET)
+    #     # If path is not absolute, resolve as <root>/<DATASET>/<IMAGE_FILENAME>
+    #     if not img_path.is_absolute():
+    #         img_path = self.root_dir / row["DATASET"] / img_path.name
+    #
+    #     if not img_path.exists():
+    #         raise FileNotFoundError(f"Image not found: {img_path}")
+    #
+    #     img = Image.open(img_path).convert("RGB")
+    #
+    #     if self.rescale_aug:
+    #         img, scale = self.rescale_aug(img)
+    #     else:
+    #         img, scale = img, 1.0
+    #
+    #     if self.target_mode == "BF-CNN":
+    #         target = float(row["BF_cbrMG_MM"]) * scale
+    #     else:
+    #         mass_mg = float(row["DRYMASS_MG"])
+    #         if not np.isfinite(mass_mg) or mass_mg <= 0:
+    #             raise ValueError(f"Log biomass requires positive, finite dry mass: {img_path}")
+    #
+    #         target = np.log(mass_mg) + 3 * np.log(scale)
+    #
+    #     # BF = M^(1/3)/L, so a simulated shrink by `scale` gives (scale^3 M)^(1/3)/L = scale * BF.
+    #     # NOT scale**3: BF is already a cube root, so cubing applies the exponent twice.
+    #     # This deviates from Eq (6) of the manuscript, which is incorrect.
+    #     target = float(row["BF_cbrMG_MM"]) * scale
+    #     # print(float(row["BF_cbrMG_MM"]), scale, target)
+    #     return img, torch.tensor(target, dtype=torch.float32)
+
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
 
         img_path = Path(row["IMAGE_FILENAME"])
-        # print(row.DATASET)
-        # If path is not absolute, resolve as <root>/<DATASET>/<IMAGE_FILENAME>
+        if not img_path.is_absolute():
+            img_path = self.root_dir / row["DATASET"] / img_path.name
 
         if not img_path.exists():
             raise FileNotFoundError(f"Image not found: {img_path}")
 
-        img = Image.open(img_path).convert("RGB")
+        with Image.open(img_path) as image:
+            img = image.convert("RGB")
 
-        if self.rescale_aug:
+        scale = 1.0
+        if self.rescale_aug is not None:
             img, scale = self.rescale_aug(img)
-        else:
-            img, scale = img, 1.0
 
+        # Apply augmentations and convert the PIL image to a tensor.
         if self.transform is not None:
             img = self.transform(img)
 
-        # BF = M^(1/3)/L, so a simulated shrink by `scale` gives (scale^3 M)^(1/3)/L = scale * BF.
-        # NOT scale**3: BF is already a cube root, so cubing applies the exponent twice.
-        # This deviates from Eq (6) of the manuscript, which is incorrect.
-        target = float(row["BF_cbrMG_MM"]) * scale
-        # print(float(row["BF_cbrMG_MM"]), scale, target)
+        if self.target_mode == "BF-CNN":
+            target = float(row["BF_cbrMG_MM"]) * scale
+        else:
+            mass_mg = float(row["DRYMASS_MG"])
+            if not np.isfinite(mass_mg) or mass_mg <= 0:
+                raise ValueError(
+                    f"Log biomass requires positive, finite dry mass: {img_path}"
+                )
+            target = np.log(mass_mg) + 3 * np.log(scale)
+
         return img, torch.tensor(target, dtype=torch.float32)
 
 # -------------------- TRANSFORMS --------------------
@@ -278,7 +322,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, labe
     model.train()
     running_loss = 0.0
     n_samples = 0
-
+    print("Model device:", next(model.parameters()).device)
     # accumulators for metrics
     preds_all = []
     targets_all = []
@@ -293,8 +337,14 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, labe
 
         # Apply multiplicative label smoothing / jitter per-sample (only for loss)
         with torch.no_grad():
-            multipliers = torch.empty((targets.size(0), 1), device=targets.device).uniform_(label_smooth_min, label_smooth_max)
-            smooth_targets = targets * multipliers
+            multipliers = torch.empty(
+                (targets.size(0), 1), device=targets.device
+            ).uniform_(label_smooth_min, label_smooth_max)
+
+            if MODEL_TYPE == "D-CNN":
+                smooth_targets = targets + torch.log(multipliers)
+            else:
+                smooth_targets = targets * multipliers
 
         preds = model(images)  # shape (B,1)
 
@@ -539,7 +589,7 @@ def run_training(
     num_workers: int = NUM_WORKERS,
     device: torch.device = DEVICE,
 ):
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=False)
 
     set_seed(SEED)
     df = pd.read_csv(csv_path)
@@ -652,6 +702,7 @@ def run_training(
 
     return history
 
+
 # -------------------- SIMPLE CLI --------------------
 
 if __name__ == "__main__":
@@ -677,7 +728,9 @@ if __name__ == "__main__":
                         help="Epoch interval at which checkpoints are written")
     parser.add_argument("--selection-window", type=int, default=SELECTION_WINDOW,
                         help="Centred rolling-median window used to select a checkpoint (1 = raw argmin)")
+    parser.add_argument("--target", choices=["BF-CNN", "D-CNN"], default="BF-CNN")
     args = parser.parse_args()
+    MODEL_TYPE = args.target
 
     # Override module-level constants so the augmentation is sweepable without edits.
     DEBUG_TILES = args.debug_tiles
