@@ -1,0 +1,10 @@
+DATA_SCOPE,comparison,difference_percentage_points,lower_95,upper_95,conclusion
+Pooled,Area linear model minus BF CNN,-13.6140986980945,-23.2717448283002,-5.48915167419053,Area linear model has lower MAPE
+Pooled,Area linear model minus Direct log-biomass CNN,-9.39235768304983,-17.2490634939768,-1.5759387788467,Area linear model has lower MAPE
+Pooled,BF CNN minus Direct log-biomass CNN,4.22174101504468,-4.16613021058779,12.7038809095554,No clear difference established
+biodiscover-S,Area linear model minus BF CNN,-18.9237070618721,-29.3589970031604,-9.77708849975658,Area linear model has lower MAPE
+biodiscover-S,Area linear model minus Direct log-biomass CNN,-9.76499890278563,-19.4625494370559,-1.26368366624303,Area linear model has lower MAPE
+biodiscover-S,BF CNN minus Direct log-biomass CNN,9.15870815908649,-0.0484852221583316,18.4655737730786,No clear difference established
+EntoScan,Area linear model minus BF CNN,-1.30280897548928,-17.7718015763713,13.6109091116559,No clear difference established
+EntoScan,Area linear model minus Direct log-biomass CNN,-8.52832144827782,-22.7396924087358,5.38815779927279,No clear difference established
+EntoScan,BF CNN minus Direct log-biomass CNN,-7.22551247278854,-19.4689164063509,5.42271642965949,No clear difference established

@@ -1,0 +1,2 @@
+model,epochs,device,runtime_seconds,runtime_hours
+BF-CNN,500,cuda,32555.777444800013,9.043271512444448
