@@ -1,0 +1,298 @@
+---
+title: "Biomass analysis"
+output: pdf_document
+date: "2026-11-20"
+---
+
+```{r, message=FALSE}
+
+rm(list=ls())
+library(data.table)   # fread
+library(ggplot2)
+library(DT)          # datatable output
+library(scales)
+library(lme4)
+library(MuMIn)
+library(plotly)
+
+
+N_BOOT_REP = 500
+
+# learning_curve_csv = "01_runs/regression_resnet101/2025-11-20_10-59-32/epoch_results.csv"
+# total_lines <- R.utils::countLines(learning_curve_csv)
+# learning_curve <- fread(learning_curve_csv, nrows = total_lines - 2)
+
+# Read the leave-spiders-out metadata.
+metadata <- fread("metadata_leave_out_Araneae.csv")
+metadata <- metadata[IS_VALID == TRUE]
+
+# Keep the variables used by your original linear model.
+metadata[, cbrDRYMASS_MG := DRYMASS_MG^(1/3)]
+metadata[, sqrtAREA_MM := sqrt(AREA_MM2)]
+
+# Check that no spiders are in training or validation.
+stopifnot(
+  all(metadata[order == "Araneae", SPLIT] == "test")
+)
+
+# Select only the spider test images.
+spider_test <- copy(metadata[
+  SPLIT == "test" & order == "Araneae"
+])
+
+# Read the existing CNN predictions, already converted to mg.
+cnn <- fread(
+  "spider_comparison_20261120_115833_643083/spider_predictions.csv"
+)
+
+# Match by image filename rather than assuming the same row order.
+stopifnot(
+  !anyDuplicated(spider_test$IMAGE_FILENAME),
+  !anyDuplicated(cnn$IMAGE_FILENAME),
+  setequal(spider_test$IMAGE_FILENAME, cnn$IMAGE_FILENAME)
+)
+
+idx <- match(spider_test$IMAGE_FILENAME, cnn$IMAGE_FILENAME)
+
+stopifnot(
+  isTRUE(all.equal(
+    spider_test$DRYMASS_MG,
+    cnn$DRYMASS_MG[idx],
+    check.attributes = FALSE
+  ))
+)
+
+spider_test[, BF_mass_mg := cnn$BF_CNN_mass_mg[idx]]
+spider_test[, log_mass_mg := cnn$log_biomass_CNN_mass_mg[idx]]
+
+cat("Valid training images:", nrow(metadata[SPLIT == "train"]), "\n")
+cat("Spider test images:", nrow(spider_test), "\n")
+
+```
+
+## Data overview
+
+``` {r, message=FALSE}
+ggplot(metadata, aes(cbrDRYMASS_MG, sqrtAREA_MM, shape=DATASET, colour=DATASET)) + 
+    geom_point(alpha=.3)  + 
+    geom_smooth(method = "lm") 
+    
+
+ggplot(metadata, aes(cbrDRYMASS_MG, sqrtAREA_MM, shape=DATASET, colour=DATASET)) + 
+    geom_point(alpha=.6)  + 
+    geom_smooth(method = "lm") +
+    facet_grid( . ~ SPLIT)
+metadata[, .N, by=c("DATASET", "SPLIT")]
+```
+## Area-based biomass prediction
+```{r, message=FALSE}
+area_model <- lm(
+  cbrDRYMASS_MG ~ sqrtAREA_MM,
+  data = metadata[SPLIT == "train"]
+)
+
+summary(area_model)
+
+# Predict only the held-out spider images.
+spider_test[, cbrDRYMASS_MG_PRED_AREA_LM :=
+  as.numeric(predict(area_model, newdata = spider_test))
+]
+
+# Convert cube-root predictions to biomass in mg.
+spider_test[, linear_mass_mg :=
+  cbrDRYMASS_MG_PRED_AREA_LM^3
+]
+
+# Plot measured versus predicted mass in mg.
+lims <- range(
+  c(0, spider_test$DRYMASS_MG, spider_test$linear_mass_mg),
+  finite = TRUE
+)
+scale_dataset <- scale_colour_manual(
+  values = c(
+    "biodiscover-S" = "#D6604D",
+    "EntoScan" = "#4393C3"
+  ),
+  name = "DATASET"
+)
+
+
+ggplot(
+  spider_test,
+  aes(
+    DRYMASS_MG,
+    linear_mass_mg,
+    shape = DATASET,
+    colour = DATASET
+  )
+) +
+  geom_point(alpha = 0.6) +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    colour = "black"
+  ) +
+  scale_dataset +
+  coord_fixed(xlim = lims, ylim = lims) +
+  labs(
+    x = "Measured dry biomass (mg)",
+    y = "Predicted dry biomass (mg)",
+    title = "Area linear model: held-out spiders"
+  )
+
+
+```
+
+```{r}
+set.seed(42)
+N_BOOT_REP <- 500
+
+prediction_columns <- c(
+  "linear_mass_mg",
+  "BF_mass_mg",
+  "log_mass_mg"
+)
+
+model_names <- c(
+  "Area linear model",
+  "BF CNN",
+  "Direct log-biomass CNN"
+)
+
+# All metrics are calculated on biomass in mg.
+calculate_metrics <- function(observed, predicted) {
+  errors <- predicted - observed
+  rmse <- sqrt(mean(errors^2))
+  total_variation <- sum((observed - mean(observed))^2)
+
+  c(
+    R2 = if (total_variation > 0) {
+      1 - sum(errors^2) / total_variation
+    } else {
+      NA_real_
+    },
+    MAE_mg = mean(abs(errors)),
+    RMSE_mg = rmse,
+    CV_RMSE_percent = 100 * rmse / mean(observed)
+  )
+}
+
+# Check inputs.
+stopifnot(
+  nrow(spider_test) > 0,
+  all(is.finite(spider_test$DRYMASS_MG)),
+  all(spider_test$DRYMASS_MG > 0),
+  all(is.finite(as.matrix(spider_test[, ..prediction_columns]))),
+  !anyNA(spider_test[, .(DATASET, INSECT_ID)])
+)
+
+# Original point estimates using every spider test image.
+point_results <- rbindlist(
+  lapply(seq_along(prediction_columns), function(i) {
+
+    scores <- calculate_metrics(
+      spider_test$DRYMASS_MG,
+      spider_test[[prediction_columns[i]]]
+    )
+
+    data.table(
+      MODEL = model_names[i],
+      METRIC = names(scores),
+      estimate = unname(scores)
+    )
+  })
+)
+
+# Store all image-row numbers belonging to each specimen.
+specimen_rows <- split(
+  seq_len(nrow(spider_test)),
+  list(spider_test$DATASET, spider_test$INSECT_ID),
+  drop = TRUE
+)
+
+# Paired specimen-cluster bootstrap.
+bootstrap_results <- rbindlist(
+  lapply(seq_len(N_BOOT_REP), function(rep_id) {
+
+    # Sample specimens with replacement.
+    selected_specimens <- sample.int(
+      length(specimen_rows),
+      length(specimen_rows),
+      replace = TRUE
+    )
+
+    # Retain every image of each selected specimen.
+    selected_rows <- unlist(
+      specimen_rows[selected_specimens],
+      use.names = FALSE
+    )
+
+    sampled <- spider_test[selected_rows]
+
+    # Evaluate all models on exactly the same sampled rows.
+    rbindlist(
+      lapply(seq_along(prediction_columns), function(i) {
+
+        scores <- calculate_metrics(
+          sampled$DRYMASS_MG,
+          sampled[[prediction_columns[i]]]
+        )
+
+        data.table(
+          REP = rep_id,
+          MODEL = model_names[i],
+          R2 = unname(scores["R2"]),
+          MAE_mg = unname(scores["MAE_mg"]),
+          RMSE_mg = unname(scores["RMSE_mg"]),
+          CV_RMSE_percent = unname(scores["CV_RMSE_percent"])
+        )
+      })
+    )
+  })
+)
+
+bootstrap_long <- melt(
+  bootstrap_results,
+  id.vars = c("REP", "MODEL"),
+  measure.vars = c("R2", "MAE_mg", "RMSE_mg", "CV_RMSE_percent"),
+  variable.name = "METRIC",
+  value.name = "VALUE"
+)
+
+stopifnot(is.numeric(bootstrap_long$VALUE))
+bootstrap_long[, METRIC := as.character(METRIC)]
+
+# Percentile 95% confidence intervals.
+confidence_intervals <- bootstrap_long[
+  ,
+  {
+    values <- VALUE[is.finite(VALUE)]
+
+    .(
+      lower_95 = if (length(values)) {
+        as.numeric(quantile(values, 0.025))
+      } else {
+        NA_real_
+      },
+      upper_95 = if (length(values)) {
+        as.numeric(quantile(values, 0.975))
+      } else {
+        NA_real_
+      },
+      valid_repetitions = length(values)
+    )
+  },
+  by = .(MODEL, METRIC)
+]
+
+# Combine original estimates with bootstrap confidence intervals.
+performance_summary <- merge(
+  point_results,
+  confidence_intervals,
+  by = c("MODEL", "METRIC"),
+  sort = FALSE
+)
+
+print(performance_summary)
+```
